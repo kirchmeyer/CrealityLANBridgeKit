@@ -1,0 +1,15 @@
+# Python runtime
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS artifacts
+.DS_Store
+
+# Large snapshots (kept for reference but not tracked)
+snapshots/**
+
+# Local build artifacts
+*.log
