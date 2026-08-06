@@ -125,7 +125,7 @@ def _fetch_json(path, timeout=5.0):
 def _fetch_printer_status(timeout=5.0):
     try:
         payload = _fetch_json(
-            "/printer/objects/query?print_stats&display_status&gcode_move&heater_bed&extruder",
+            "/printer/objects/query?print_stats&display_status&gcode_move&heater_bed&extruder&output_pin%20LED",
             timeout=timeout,
         )
     except Exception:
