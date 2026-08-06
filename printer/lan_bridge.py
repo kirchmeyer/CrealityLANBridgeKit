@@ -125,7 +125,7 @@ def _fetch_json(path, timeout=5.0):
 def _fetch_printer_status(timeout=5.0):
     try:
         payload = _fetch_json(
-            "/printer/objects/query?print_stats&display_status&gcode_move&heater_bed&extruder&output_pin%20LED",
+            "/printer/objects/query?print_stats&display_status&gcode_move&heater_bed&extruder&heater_generic%20chamber_heater&output_pin%20fan0&output_pin%20fan1&output_pin%20fan2&output_pin%20LED",
             timeout=timeout,
         )
     except Exception:
@@ -137,14 +137,25 @@ def _fetch_printer_status(timeout=5.0):
     heater_bed = status.get("heater_bed", {}) or {}
     extruder = status.get("extruder", {}) or {}
     gcode_move = status.get("gcode_move", {}) or {}
+    chamber = status.get("heater_generic chamber_heater", {}) or {}
+    fan0 = status.get("output_pin fan0", {}) or {}
+    fan1 = status.get("output_pin fan1", {}) or {}
+    fan2 = status.get("output_pin fan2", {}) or {}
     state_name = print_stats.get("state") or display_status.get("state") or "standby"
     output_pin = status.get("output_pin LED", {}) or {}
     led_value = float(output_pin.get("value", 0.0))
+
+    def _pct(d):
+        v = float(d.get("value", 0.0) if isinstance(d, dict) else 0.0)
+        return int(round(v * 100))
+
     return {
         "state": state_name,
         "display_status": {"progress": display_status.get("progress", 0.0), "message": display_status.get("message")},
         "heater_bed": {"temperature": heater_bed.get("temperature", 0.0), "target": heater_bed.get("target", 0.0)},
         "extruder": {"temperature": extruder.get("temperature", 0.0), "target": extruder.get("target", 0.0)},
+        "chamber": {"temperature": chamber.get("temperature", 0.0), "target": chamber.get("target", 0.0)},
+        "fans": {"fan0": _pct(fan0), "fan1": _pct(fan1), "fan2": _pct(fan2)},
         "print_stats": {
             "state": state_name,
             "filename": print_stats.get("filename", ""),
@@ -379,10 +390,7 @@ def _handle_set_command(params):
 
     if "bedTempControl" in params:
         bed = params["bedTempControl"]
-        if isinstance(bed, dict):
-            val = bed.get("val")
-        else:
-            val = bed
+        val = bed.get("val") if isinstance(bed, dict) else bed
         try:
             temp = int(float(val))
             commands.append(f"M140 S{temp}")
@@ -390,8 +398,19 @@ def _handle_set_command(params):
             pass
 
     if "boxTempControl" in params:
+        box = params["boxTempControl"]
+        val = box.get("val") if isinstance(box, dict) else box
         try:
-            temp = int(float(params["boxTempControl"]))
+            temp = int(float(val))
+            commands.append(f"M141 S{temp}")
+        except (TypeError, ValueError):
+            pass
+    # Some app builds send a dedicated chamber temp key.
+    if "chamberTempControl" in params:
+        ch = params["chamberTempControl"]
+        val = ch.get("val") if isinstance(ch, dict) else ch
+        try:
+            temp = int(float(val))
             commands.append(f"M141 S{temp}")
         except (TypeError, ValueError):
             pass
@@ -428,11 +447,24 @@ def _handle_set_command(params):
         if cmd:
             commands.append(cmd)
 
-    # Fan / LED toggles. Values from the app may be 0/1, 0-100 %, or 0-255;
-    # output_pin expects 0.0-1.0.
+    # Fan / LED toggles. Values from the app may be 0/1, 0-100 %, or 0-255.
+    # M106 accepts 0-255 and works with both native fan objects and output_pin.
+    def _fan_value(v):
+        try:
+            fv = float(v.get("val") if isinstance(v, dict) else v)
+            if fv > 100.0:
+                fv = fv  # already 0-255
+            elif fv > 1.0:
+                fv = fv * 2.55
+            else:
+                fv = fv * 255.0
+            return int(max(0.0, min(255.0, fv)))
+        except (TypeError, ValueError):
+            return 0
+
     def _pin_value(v):
         try:
-            fv = float(v)
+            fv = float(v.get("val") if isinstance(v, dict) else v)
             if fv > 100.0:
                 fv = fv / 255.0
             elif fv > 1.0:
@@ -442,11 +474,11 @@ def _handle_set_command(params):
             return 0.0
 
     if "fan" in params:
-        commands.append(f"SET_PIN PIN=fan0 VALUE={_pin_value(params['fan']):.3f}")
+        commands.append(f"M106 P0 S{_fan_value(params['fan'])}")
     if "fanAuxiliary" in params:
-        commands.append(f"SET_PIN PIN=fan1 VALUE={_pin_value(params['fanAuxiliary']):.3f}")
+        commands.append(f"M106 P1 S{_fan_value(params['fanAuxiliary'])}")
     if "fanCase" in params:
-        commands.append(f"SET_PIN PIN=fan2 VALUE={_pin_value(params['fanCase']):.3f}")
+        commands.append(f"M106 P2 S{_fan_value(params['fanCase'])}")
     if "lightSw" in params:
         commands.append(f"SET_PIN PIN=LED VALUE={_pin_value(params['lightSw']):.3f}")
     if "ledSw" in params:
@@ -851,8 +883,7 @@ def _build_protocal_payload():
         xyz = [0, 0, 0]
     xyz_mm = [v / 1000.0 if isinstance(v, (int, float)) and abs(v) > 1000 else v for v in xyz]
 
-    fan_duty = float(pipe_data.get("model_fan") or 0.0)
-    fan_pct = int(round(fan_duty * 100)) if fan_duty <= 1.0 else int(round(fan_duty))
+    fan_pct = status.get("fans", {}).get("fan0", 0)
 
     return {
         "model": model,
@@ -870,7 +901,7 @@ def _build_protocal_payload():
         "deviceType": 0,
         "video": 1,
         "features": ["videoInfo.video"],
-        "linuxVideoUrl": f"http://{address}:80/camera.jpeg",
+        "linuxVideoUrl": f"http://{address}:80/camera.mjpeg",
         "webrtcSupport": False,
         "version": "1.0.0",
         "isLanPrinter": True,
@@ -919,6 +950,7 @@ def _build_detail_payload():
     temperature = {
         "nozzle": {"value": status.get("extruder", {}).get("temperature", 0.0), "target": status.get("extruder", {}).get("target", 0.0), "max": 300.0, "size": 0.4},
         "bed": {"value": status.get("heater_bed", {}).get("temperature", 0.0), "target": status.get("heater_bed", {}).get("target", 0.0), "max": 120.0},
+        "chamber": {"value": status.get("chamber", {}).get("temperature", 0.0), "target": status.get("chamber", {}).get("target", 0.0), "max": 80.0},
     }
 
     device = {
@@ -967,16 +999,16 @@ def _build_detail_payload():
         "nozzleTemp2": temperature["nozzle"]["target"],
         "bedTemp": temperature["bed"]["value"],
         "bedTemp2": temperature["bed"]["target"],
-        "fan": 0,
-        "modelFanPct": 0,
-        "fanAuxiliary": 0,
-        "fanCase": 0,
-        "caseFan": 0,
-        "caseFanPct": 0,
+        "fan": status.get("fans", {}).get("fan0", 0),
+        "modelFanPct": status.get("fans", {}).get("fan0", 0),
+        "fanAuxiliary": status.get("fans", {}).get("fan1", 0),
+        "fanCase": status.get("fans", {}).get("fan2", 0),
+        "caseFan": status.get("fans", {}).get("fan2", 0),
+        "caseFanPct": status.get("fans", {}).get("fan2", 0),
         "sideFan": 0,
         "sideFanPct": 0,
-        "chamberTemp": 0,
-        "chamberTempTarget": 0,
+        "chamberTemp": temperature["chamber"]["value"],
+        "chamberTempTarget": temperature["chamber"]["target"],
         "ledSw": 1 if status.get("led", 0.0) > 0.01 else 0,
         "lightSw": 1 if status.get("led", 0.0) > 0.01 else 0,
         "ctrol": {
@@ -984,17 +1016,17 @@ def _build_detail_payload():
             "curPosition": protocal["curPosition"],
             "curFeedratePct": protocal["curFeedratePct"],
             "speedMode": 1 if protocal["curFeedratePct"] == 25 else 0,
-            "fan": 0,
-            "modelFanPct": 0,
-            "fanAuxiliary": 0,
-            "auxiliaryFanPct": 0,
-            "fanCase": 0,
-            "caseFan": 0,
-            "caseFanPct": 0,
+            "fan": status.get("fans", {}).get("fan0", 0),
+            "modelFanPct": status.get("fans", {}).get("fan0", 0),
+            "fanAuxiliary": status.get("fans", {}).get("fan1", 0),
+            "auxiliaryFanPct": status.get("fans", {}).get("fan1", 0),
+            "fanCase": status.get("fans", {}).get("fan2", 0),
+            "caseFan": status.get("fans", {}).get("fan2", 0),
+            "caseFanPct": status.get("fans", {}).get("fan2", 0),
             "sideFan": 0,
             "sideFanPct": 0,
-            "chamberTemp": 0,
-            "chamberTempTarget": 0,
+            "chamberTemp": temperature["chamber"]["value"],
+            "chamberTempTarget": temperature["chamber"]["target"],
             "ledSw": 1 if status.get("led", 0.0) > 0.01 else 0,
             "lightSw": 1 if status.get("led", 0.0) > 0.01 else 0,
         },
@@ -1009,7 +1041,7 @@ def _build_detail_payload():
         "moonrakerPort": int(MOONRAKER_URL.rsplit(":", 1)[-1]),
         "fluiddPort": 80,
         "mainsailPort": 80,
-        "KlipperUrl": protocal["linuxVideoUrl"],
+        "KlipperUrl": f"http://{protocal['address']}:80/camera.mjpeg",
         "boxsInfo": boxs_info,
         "boxConfig": box_config,
     }

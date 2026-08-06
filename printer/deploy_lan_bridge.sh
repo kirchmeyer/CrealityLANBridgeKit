@@ -8,6 +8,8 @@ echo "Deploying minimal LAN bridge to ${PRINTER_HOST}..."
 
 scp -O "${SCRIPT_DIR}/lan_bridge.py" "${PRINTER_HOST}:/tmp/lan_bridge.py"
 scp -O "${SCRIPT_DIR}/lan_bridge.init.sh" "${PRINTER_HOST}:/tmp/lan_bridge.init.sh"
+scp -O "${SCRIPT_DIR}/mjpeg_server.py" "${PRINTER_HOST}:/tmp/mjpeg_server.py"
+scp -O "${SCRIPT_DIR}/mjpeg_server.init.sh" "${PRINTER_HOST}:/tmp/mjpeg_server.init.sh"
 scp -O "${SCRIPT_DIR}/creality.lan.locations.conf" "${PRINTER_HOST}:/tmp/creality.lan.locations.conf"
 scp -O "${SCRIPT_DIR}/creality.lan.websocket.conf" "${PRINTER_HOST}:/tmp/creality.lan.websocket.conf"
 
@@ -17,6 +19,10 @@ mv /tmp/lan_bridge.py /usr/local/bin/lan_bridge.py
 chmod +x /usr/local/bin/lan_bridge.py
 mv /tmp/lan_bridge.init.sh /etc/init.d/lan_bridge
 chmod +x /etc/init.d/lan_bridge
+mv /tmp/mjpeg_server.py /usr/local/bin/mjpeg_server.py
+chmod +x /usr/local/bin/mjpeg_server.py
+mv /tmp/mjpeg_server.init.sh /etc/init.d/mjpeg_server
+chmod +x /etc/init.d/mjpeg_server
 mv /tmp/creality.lan.locations.conf /etc/nginx/conf.d/creality.lan.locations.conf
 mv /tmp/creality.lan.websocket.conf /etc/nginx/conf.d/creality.lan.websocket.conf
 
@@ -33,10 +39,12 @@ fi
 
 /etc/init.d/lan_bridge enable
 /etc/init.d/lan_bridge restart
+/etc/init.d/mjpeg_server enable
+/etc/init.d/mjpeg_server restart
 
 nginx -t && nginx -s reload
 
-echo "lan_bridge deployed and running on 127.0.0.1:9002"
+echo "lan_bridge and mjpeg_server deployed and running"
 '
 
 echo "Done."

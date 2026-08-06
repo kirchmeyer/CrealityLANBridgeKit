@@ -1,0 +1,11 @@
+# Example moonraker webcam section for the go2rtc + H264 V4L2 setup.
+# Copy/adapt this into /usr/share/moonraker/moonraker.conf.
+
+[webcam camera]
+enabled: True
+service: mjpegstreamer
+# go2rtc reads H264 directly from /dev/video0 and serves it via RTSP.
+# mjpeg_server transcodes that RTSP feed to MJPEG for Fluidd/Mainsail.
+snapshot_url: /webcam/api/frame.jpeg?src=camera
+stream_url: /webcam/stream.mjpg
+target_fps: 15

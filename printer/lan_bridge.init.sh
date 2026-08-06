@@ -20,5 +20,5 @@ start_service() {
 }
 
 stop_service() {
-    pkill -9 -f "python3 /usr/local/bin/lan_bridge.py" 2>/dev/null || true
+    ps | awk '/python3 \/usr\/local\/bin\/lan_bridge.py/{print $1}' | xargs -r kill -9 2>/dev/null || true
 }
