@@ -138,6 +138,8 @@ def _fetch_printer_status(timeout=5.0):
     extruder = status.get("extruder", {}) or {}
     gcode_move = status.get("gcode_move", {}) or {}
     state_name = print_stats.get("state") or display_status.get("state") or "standby"
+    output_pin = status.get("output_pin LED", {}) or {}
+    led_value = float(output_pin.get("value", 0.0))
     return {
         "state": state_name,
         "display_status": {"progress": display_status.get("progress", 0.0), "message": display_status.get("message")},
@@ -151,6 +153,7 @@ def _fetch_printer_status(timeout=5.0):
             "filament_used": print_stats.get("filament_used", 0.0),
         },
         "gcode_move": {"speed_factor": gcode_move.get("speed_factor", 1.0)},
+        "led": led_value,
     }
 
 
@@ -425,12 +428,15 @@ def _handle_set_command(params):
         if cmd:
             commands.append(cmd)
 
-    # Fan / LED toggles. Values from the app are 0/1 or 0-255; output_pin expects 0.0-1.0.
+    # Fan / LED toggles. Values from the app may be 0/1, 0-100 %, or 0-255;
+    # output_pin expects 0.0-1.0.
     def _pin_value(v):
         try:
             fv = float(v)
-            if fv > 1.0:
+            if fv > 100.0:
                 fv = fv / 255.0
+            elif fv > 1.0:
+                fv = fv / 100.0
             return max(0.0, min(1.0, fv))
         except (TypeError, ValueError):
             return 0.0
@@ -971,8 +977,8 @@ def _build_detail_payload():
         "sideFanPct": 0,
         "chamberTemp": 0,
         "chamberTempTarget": 0,
-        "ledSw": 0,
-        "lightSw": 0,
+        "ledSw": 1 if status.get("led", 0.0) > 0.01 else 0,
+        "lightSw": 1 if status.get("led", 0.0) > 0.01 else 0,
         "ctrol": {
             "autohome": "X:0 Y:0 Z:0",
             "curPosition": protocal["curPosition"],
@@ -989,8 +995,8 @@ def _build_detail_payload():
             "sideFanPct": 0,
             "chamberTemp": 0,
             "chamberTempTarget": 0,
-            "ledSw": 0,
-            "lightSw": 0,
+            "ledSw": 1 if status.get("led", 0.0) > 0.01 else 0,
+            "lightSw": 1 if status.get("led", 0.0) > 0.01 else 0,
         },
         "data": {
             "bedTemp0": temperature["bed"]["value"],
