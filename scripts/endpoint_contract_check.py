@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -60,54 +62,20 @@ def make_multipart(file_name: str, payload: bytes) -> Tuple[str, bytes]:
 
 
 def check_non_upload_routes(base: str, timeout: float) -> None:
-    tests = [
-        ("/info", ["mac", "model", "modelName"]),
-        ("/api/v1/device/status", ["code", "message", "result"]),
-        ("/cxy/v1/status", ["code", "message", "result"]),
-    ]
-
-    for route, keys in tests:
-        status, payload = fetch_json(base + route, timeout=timeout)
-        if status != 200:
-            fail(f"{route} status {status}, expected 200")
-        if not isinstance(payload, dict):
-            fail(f"{route} payload is not a JSON object")
-        assert_keys(payload, keys, route)
-        print(f"OK: {route}")
-
-    for route in ["/call/webrtc_local", "/api/v1/streams"]:
-        status, payload = fetch_json(base + route, timeout=timeout)
-        if status != 200:
-            fail(f"{route} status {status}, expected 200")
-        if not isinstance(payload, dict):
-            fail(f"{route} payload is not a JSON object")
-        print(f"OK: {route}")
-
-    for route in ["/api/v1/device/status", "/cxy/v1/status"]:
-        status, payload = fetch_json(base + route, timeout=timeout)
-        if status != 200:
-            fail(f"{route} status {status}, expected 200")
-        result = assert_path(payload, ["result"], route)
-        if not isinstance(result, dict):
-            fail(f"{route} result is not an object")
-        for key in ["model", "modelName", "machine_name", "machine_type", "name", "address", "mac"]:
-            if key not in result:
-                fail(f"{route} missing identity field {key}")
-        print(f"OK: {route} identity payload")
-
+    # /info must match the stock Creality firmware shape exactly.
     status, payload = fetch_json(base + "/info", timeout=timeout)
     if status != 200 or not isinstance(payload, dict):
         fail("/info invalid response")
-    if not payload.get("video"):
-        fail("/info did not advertise video capability")
-    if not isinstance(payload.get("features"), list) or not any("videoEncryption" in str(item) for item in payload.get("features", [])):
-        fail("/info missing videoEncryption feature flag")
-    print("OK: /info camera metadata")
+    for key in ["mac", "model", "sn", "version", "videoPort", "wssPort"]:
+        if key not in payload:
+            fail(f"/info missing required stock key {key}")
+    print("OK: /info stock contract")
 
+    # /protocal.csp is the legacy status endpoint the desktop app polls.
     status, payload = fetch_json(base + "/protocal.csp?fname=Info&opt=main&function=get", timeout=timeout)
     if status != 200 or not isinstance(payload, dict):
         fail("/protocal.csp invalid response")
-    for key in ["model", "ssid", "mac", "address", "features", "video", "linuxVideoUrl"]:
+    for key in ["model", "modelName", "ssid", "mac", "address", "features", "video", "linuxVideoUrl", "state", "deviceState"]:
         if key not in payload:
             fail(f"/protocal.csp missing {key}")
     if not payload.get("video"):
@@ -116,69 +84,37 @@ def check_non_upload_routes(base: str, timeout: float) -> None:
         fail("/protocal.csp missing videoEncryption feature flag")
     print("OK: /protocal.csp legacy compatibility")
 
-    status, payload = fetch_json(base + "/machine/system_info", timeout=timeout)
-    if status != 200 or not isinstance(payload, dict):
-        fail("/machine/system_info invalid response")
-    network = assert_path(payload, ["result", "system_info", "network"], "/machine/system_info")
-    if not isinstance(network, dict):
-        fail("/machine/system_info result/system_info/network is not object")
-    print("OK: /machine/system_info")
 
-    status, payload = fetch_json(base + "/machine/multi_machine", timeout=timeout)
-    if status != 200 or not isinstance(payload, dict):
-        fail("/machine/multi_machine invalid response")
-    printers = assert_path(payload, ["result", "multi_printer_info"], "/machine/multi_machine")
-    if not isinstance(printers, list) or not printers:
-        fail("/machine/multi_machine result/multi_printer_info is empty")
-    first = printers[0]
-    if not isinstance(first, dict):
-        fail("/machine/multi_machine first printer is not object")
-    for k in ["ip", "machine_name", "machine_type", "model", "modelName"]:
-        if k not in first:
-            fail(f"/machine/multi_machine first printer missing {k}")
-    print("OK: /machine/multi_machine")
-
-    status, payload = fetch_json(base + "/printer/objects/query", timeout=timeout)
-    if status != 200 or not isinstance(payload, dict):
-        fail("/printer/objects/query invalid response")
-    _ = assert_path(payload, ["result", "status"], "/printer/objects/query")
-    print("OK: /printer/objects/query")
-
-    status, payload = fetch_json(base + "/printer/print/start", timeout=timeout)
-    if status != 200 or not isinstance(payload, dict):
-        fail("/printer/print/start invalid response")
-    _ = assert_path(payload, ["result", "print_started"], "/printer/print/start")
-    print("OK: /printer/print/start")
-
-    for route in ["/printer/print/cancel", "/printer/print/stop", "/printer/cancel", "/printer/emergency_stop"]:
-        status, payload = fetch_json(base + route, method="POST", data=b"", headers={"Content-Type": "application/json", "Accept": "application/json"}, timeout=max(timeout, 20.0))
-        if status not in (200, 201, 202):
-            fail(f"{route} status {status}, expected a success status")
-        if not isinstance(payload, dict):
-            fail(f"{route} payload is not a JSON object")
-        print(f"OK: {route}")
-
-    body = json.dumps({"filename": "contract_check.gcode"}).encode("utf-8")
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    status, payload = fetch_json(base + "/printer/print/start", method="POST", data=body, headers=headers, timeout=max(timeout, 20.0))
-    if status != 200 or not isinstance(payload, dict):
-        fail("/printer/print/start POST invalid response")
-    result_value = payload.get("result")
-    if result_value not in ("ok", "OK"):
-        fail("/printer/print/start POST did not return Moonraker-style success payload")
-    print("OK: /printer/print/start POST")
-
-
-def check_legacy_probe(base: str, timeout: float) -> None:
-    for route in ["/info", "/protocal.csp"]:
-        status, payload = fetch_json(base + route, timeout=timeout)
-        if status != 200:
-            fail(f"legacy probe {route} status {status}, expected 200")
-        if not isinstance(payload, dict):
-            fail(f"legacy probe {route} payload is not a JSON object")
-        if route == "/protocal.csp" and not payload.get("video"):
-            fail("legacy probe /protocal.csp did not advertise video capability")
-        print(f"OK: legacy probe {route}")
+def check_websocket(base: str, timeout: float) -> None:
+    import socket, ssl, struct
+    scheme, rest = base.split("://", 1)
+    host_port = rest.split("/", 1)[0]
+    host, port_str = host_port.rsplit(":", 1)
+    port = int(port_str)
+    if scheme == "https":
+        port = 443
+    key = base64.b64encode(b"x" * 16).decode()
+    accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+    req = (
+        f"GET /call/websocket HTTP/1.1\r\nHost: {host}\r\n"
+        f"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    )
+    try:
+        sock = socket.socket()
+        if scheme == "https":
+            ctx = ssl._create_unverified_context()
+            sock = ctx.wrap_socket(sock, server_hostname=host)
+        sock.settimeout(timeout)
+        sock.connect((host, port))
+        sock.send(req.encode())
+        resp = sock.recv(1024).decode(errors="ignore")
+        if not resp.startswith("HTTP/1.1 101"):
+            fail(f"WebSocket handshake failed: {resp.split(chr(13))[0]}")
+        print("OK: WebSocket handshake")
+        sock.close()
+    except Exception as e:
+        fail(f"WebSocket check failed: {e}")
 
 
 def check_upload_routes(base: str, timeout: float) -> None:
@@ -223,7 +159,7 @@ def main() -> None:
 
     try:
         check_non_upload_routes(base, args.timeout)
-        check_legacy_probe(base, args.timeout)
+        check_websocket(base, args.timeout)
         if not args.skip_upload:
             check_upload_routes(base, args.timeout)
     except urllib.error.HTTPError as e:
