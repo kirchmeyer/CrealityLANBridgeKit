@@ -302,7 +302,7 @@ See [SECURITY.md](SECURITY.md) for how to report vulnerabilities and the assumpt
 
 ## Third-party software
 
-- [go2rtc](https://github.com/AlexxIT/go2rtc) is used for camera streaming and RTSP/WebRTC bridging. go2rtc is licensed under the [MIT License](https://github.com/AlexxIT/go2rtc/blob/master/LICENSE).
+- [go2rtc](https://github.com/AlexxIT/go2rtc) is used for camera streaming and RTSP/WebRTC bridging. go2rtc is licensed under the [MIT License](https://github.com/AlexxIT/go2rtc/blob/master/LICENSE). See [LICENSE-THIRD-PARTY](LICENSE-THIRD-PARTY) for the full license text.
 
 ## Known issues and remaining friction
 
