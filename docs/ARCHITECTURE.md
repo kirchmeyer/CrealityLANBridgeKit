@@ -4,72 +4,48 @@ This page describes how the printer, the compatibility backend, the desktop app,
 
 ## High-level topology
 
-```text
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Your LAN / Internet                             │
-│  ┌──────────────────────┐                                                   │
-│  │  Creality Print 7.x  │  (macOS/Windows desktop app — unchanged)         │
-│  │                      │                                                   │
-│  │  ┌──────────────┐    │                                                   │
-│  │  │   Camera     │    │  http(s)://{printer}/camera.jpeg                 │
-│  │  │   preview    │    │                                                   │
-│  │  └──────────────┘    │                                                   │
-│  │         │            │                                                   │
-│  │  ┌──────────────┐    │                                                   │
-│  │  │ WebSocket    │    │  ws://{printer}:9999                              │
-│  │  │ control      │    │                                                   │
-│  │  └──────────────┘    │                                                   │
-│  │         │            │                                                   │
-│  │  ┌──────────────┐    │                                                   │
-│  │  │  HTTP API    │    │  /info, /protocal.csp, /upload/{file}            │
-│  │  └──────────────┘    │                                                   │
-│  └─────────┬────────────┘                                                   │
-│            │                                                                 │
-│            │ port 80 / 9999 / 443 (public host printer.lan)                │
-│            ▼                                                                 │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                       OpenWrt router / printer                       │    │
-│  │  ┌─────────────────────────────────────────────────────────────┐   │    │
-│  │  │  nginx (port 80 + 9999)                                     │   │    │
-│  │  │  - /info, /protocal.csp  → lan_bridge.py (127.0.0.1:9002)   │   │    │
-│  │  │  - /upload/{file}        → lan_bridge.py                    │   │    │
-│  │  │  - /camera.jpeg, /camera.mjpeg → go2rtc (127.0.0.1:1984)    │   │    │
-│  │  │  - :8080/?action=stream  → go2rtc fallback frame            │   │    │
-│  │  │  - :9999 WebSocket       → lan_bridge.py                    │   │    │
-│  │  └──────────────────────────┬──────────────────────────────────┘   │    │
-│  │                             │                                       │    │
-│  │              ┌──────────────┼──────────────┐                       │    │
-│  │              ▼              ▼              ▼                       │    │
-│  │  ┌─────────────────┐ ┌───────────┐ ┌─────────────────┐            │    │
-│  │  │  lan_bridge.py  │ │  go2rtc   │ │ webrtc_local_*  │            │    │
-│  │  │  (127.0.0.1:9002)│ │(:1984)    │ │  (port 8000)    │            │    │
-│  │  └────────┬────────┘ └─────┬─────┘ └─────────────────┘            │    │
-│  │           │                │                                       │    │
-│  │           │     ┌──────────┘                                       │    │
-│  │           │     │  H264 from /dev/video0 via ffmpeg pipe           │    │
-│  │           ▼     ▼                                                  │    │
-│  │  ┌────────────────────────────────────────┐                       │    │
-│  │  │  Moonraker  (http://127.0.0.1:7125)    │                       │    │
-│  │  │  - printer/objects/query               │                       │    │
-│  │  │  - printer/gcode/script                │                       │    │
-│  │  │  - printer/print/start                 │                       │    │
-│  │  │  - server/files/upload                 │                       │    │
-│  │  └───────────────┬────────────────────────┘                       │    │
-│  │                  │                                                 │    │
-│  │                  ▼                                                 │    │
-│  │  ┌────────────────────────────────────────┐                       │    │
-│  │  │  Klipper  (/tmp/klippy_uds)            │                       │    │
-│  │  │  - heaters, motion, fans, LED          │                       │    │
-│  │  │  - CFS/AMS macros (CFS_LOAD, etc.)     │                       │    │
-│  │  └────────────────────────────────────────┘                       │    │
-│  │                                                                     │    │
-│  │  Data sources read directly by lan_bridge.py:                       │    │
-│  │  - /mnt/UDISK/creality/userdata/config/system_config.json           │    │
-│  │  - /mnt/UDISK/creality/userdata/box/material_box_info.json          │    │
-│  │  - /mnt/UDISK/creality/userdata/config/temperature_info.json        │    │
-│  │  - /mnt/UDISK/creality/gui/config/pipe-*.json                       │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Desktop["Desktop / LAN"]
+        App[Creality Print 7.x\nmacOS/Windows]
+        Proxy[Optional local\nHTTP proxy\n127.0.0.1:80]
+    end
+
+    subgraph Printer["OpenWrt printer"]
+        Nginx[nginx\n:80 :81 :443 :9999]
+        Bridge[lan_bridge.py\n127.0.0.1:9002]
+        Go2rtc[go2rtc\n127.0.0.1:1984]
+        WebRTC[webrtc_local_bridge.py\n127.0.0.1:8000]
+        Cam[cam_app / ffmpeg\n/dev/video0 H264]
+        Moonraker[Moonraker\n127.0.0.1:7125]
+        Klipper[Klipper\n/tmp/klippy_uds]
+        Data[(Creality config files)]
+    end
+
+    App -->|HTTP /info, /protocal.csp, /upload| Proxy
+    App -->|WebSocket :9999| Nginx
+    App -.->|camera.jpeg / camera.mjpeg| Nginx
+    Proxy -->|HTTPS| Nginx
+    Nginx -->|/info /protocal.csp /upload| Bridge
+    Nginx -->|WebSocket :9999| Bridge
+    Nginx -->|/camera.*| Go2rtc
+    Nginx -->|/call/webrtc_local| WebRTC
+    Bridge -->|printer state + gcode| Moonraker
+    Bridge -->|read identity, targets, CFS| Data
+    Moonraker -->|control| Klipper
+    Go2rtc -->|MJPEG/H264| Cam
+    WebRTC -->|SDP exchange| Go2rtc
+
+    classDef external fill:#e1f5fe,stroke:#01579b
+    classDef app fill:#fff3e0,stroke:#e65100
+    classDef service fill:#e8f5e9,stroke:#1b5e20
+    classDef data fill:#f3e5f5,stroke:#4a148c
+    class App app
+    class Proxy external
+    class Nginx,Bridge,Go2rtc,WebRTC service
+    class Cam service
+    class Moonraker,Klipper service
+    class Data data
 ```
 
 ## Request flow examples
