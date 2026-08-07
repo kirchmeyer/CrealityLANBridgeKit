@@ -1,6 +1,13 @@
-# Creality LAN Bridge Kit
+# CrealityLANBridgeKit
 
-This repository is a printer-side compatibility layer for the stock Creality Print macOS app. The goal is to keep the app stock, make the printer expose the contract the app already expects, and do it all over HTTPS without breaking either LAN-added or cloud-connected printers.
+A printer-side compatibility layer for the stock Creality Print macOS app. The goal is to keep the app stock, make the printer expose the contract the app already expects, and do it all over HTTPS without breaking either LAN-added or cloud-connected printers.
+
+```bash
+git clone https://github.com/kirchmeyer/CrealityLANBridgeKit.git
+cd CrealityLANBridgeKit
+```
+
+## What this project does
 
 ## What this project does
 

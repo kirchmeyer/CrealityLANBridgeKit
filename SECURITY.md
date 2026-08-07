@@ -13,7 +13,7 @@ This is an unofficial compatibility project maintained in spare time. Security f
 
 If you discover a security issue that could affect users of this project, please report it privately rather than opening a public issue.
 
-Email: see the repository owner's profile or a dedicated security contact in the README.
+Email: security@kirchmeyer.net
 
 Please include:
 

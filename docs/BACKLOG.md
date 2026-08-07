@@ -1,4 +1,4 @@
-# Creality LAN Bridge Kit backlog
+# CrealityLANBridgeKit backlog
 
 This file tracks simplifications, improvements, and future ideas that have been
 identified but not yet implemented. Items are intentionally not prioritized;
