@@ -192,7 +192,7 @@ def collect_status():
         ("nginx", "nginx", "nginx"),
         ("lan_bridge", "python3 /usr/local/bin/lan_bridge.py", "lan_bridge"),
         ("app_cloud_only", "/usr/bin/app-server", "app_cloud_only"),
-        ("stock app (orphan)", "/usr/bin/web-server", "app"),
+        ("stock app (disabled)", "/usr/bin/web-server", "app"),
         ("go2rtc", "go2rtc", "go2rtc"),
         ("cam_app", "/usr/bin/cam_app", "go2rtc"),
         ("cam_delivery_bridge", "python3 /usr/local/bin/cam_delivery_bridge.py", "go2rtc"),
@@ -335,7 +335,7 @@ pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:
     <pre>{monitor_tail}</pre>
   </div>
 </div>
-<p class="note"><strong>Note:</strong> "orphan" services are running processes left over from the stock <code>/etc/init.d/app</code> but no longer started at boot. "manual" services are started by our camera-stack init even though their stock init script is disabled at boot. The camera stack uses a single <code>cam_app</code> source; the separate <code>cloud_webrtc_bridge.py</code> feeder has been retired.</p>
+<p class="note"><strong>Note:</strong> The stock <code>/etc/init.d/app</code> is disabled so only <code>/etc/init.d/app_cloud_only</code> starts at boot. A leftover <code>web-server</code> process keeps respawning (it is no longer listening on :80/:443; nginx owns those ports). "manual" services are started by our camera-stack init even though their stock init script is disabled at boot. The camera stack uses a single <code>cam_app</code> source; the separate <code>cloud_webrtc_bridge.py</code> feeder has been retired.</p>
 <p class="footer">Served by nrvous_status_page.py on {bind}:{port}</p>
 </body>
 </html>"""
@@ -444,8 +444,22 @@ def _run_quick_checks():
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(checks)) as ex:
         futures = {ex.submit(fn): name for name, fn in checks.items()}
-        for fut in concurrent.futures.as_completed(futures, timeout=5):
-            results[futures[fut]] = fut.result()
+        # Use a generous overall timeout but return whatever completed so a
+        # single slow MJPEG endpoint cannot abort the whole status page.
+        try:
+            for fut in concurrent.futures.as_completed(futures, timeout=5):
+                results[futures[fut]] = fut.result()
+        except concurrent.futures.TimeoutError:
+            pass
+        for fut, name in futures.items():
+            if name not in results:
+                if fut.done():
+                    try:
+                        results[name] = fut.result()
+                    except Exception as exc:
+                        results[name] = f'<span class="badge fail">{exc}</span>'
+                else:
+                    results[name] = '<span class="badge warn">timeout</span>'
     _quick_cache["data"] = results
     _quick_cache["expires"] = datetime.now(timezone.utc).timestamp() + _quick_cache["ttl"]
     return results
@@ -490,6 +504,13 @@ def check_url_post_webrtc(url, host=None):
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
+
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            # Client disconnected before we finished sending; not a server bug.
+            pass
 
     def _json(self, obj):
         self.send_response(200)
@@ -571,6 +592,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
 
+class ReuseAddrThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
 def main():
     # Pre-warm the status cache in a background thread so the first HTTP
     # request doesn't pay the full probe cost.
@@ -581,7 +606,7 @@ def main():
         except Exception:
             pass
     threading.Thread(target=_warm, daemon=True).start()
-    server = ThreadingHTTPServer((BIND, PORT), Handler)
+    server = ReuseAddrThreadingHTTPServer((BIND, PORT), Handler)
     print(f"nrvous status page at http://{BIND}:{PORT}/nrvous-status/")
     server.serve_forever()
 
