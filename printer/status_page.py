@@ -23,12 +23,16 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import traceback
 import urllib.parse
+import zipfile
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -48,6 +52,8 @@ LIGHT_ON_GCODE = os.environ.get("LIGHT_ON_GCODE", "SET_PIN PIN=LED VALUE=1")
 LIGHT_OFF_GCODE = os.environ.get("LIGHT_OFF_GCODE", "SET_PIN PIN=LED VALUE=0")
 LIGHT_MOONRAKER_URL = os.environ.get("LIGHT_MOONRAKER_URL", "http://127.0.0.1:7125")
 LIGHT_QUERY_OBJECT = os.environ.get("LIGHT_QUERY_OBJECT", "output_pin LED")
+NGINX_CERT_DIR = os.environ.get("NGINX_CERT_DIR", "/etc/nginx/conf.d")
+NGINX_CERT_BASENAME = os.environ.get("NGINX_CERT_BASENAME", "self-signed")
 
 
 class _EcsFormatter(logging.Formatter):
@@ -246,6 +252,128 @@ def _query_light_state():
         return False
 
 
+def _parse_cert_pem(pem_text):
+    """Extract subject, issuer, and notAfter from a PEM certificate without
+    requiring cryptography or Python 3.10+ ssl APIs.
+
+    Parses the first certificate only. Subject/Issuer are read from the DER
+    as RDN sequences; notAfter is read from the validity UTCTime/GeneralizedTime.
+    """
+    import base64
+    import datetime as dt
+    import re
+
+    start = pem_text.find("-----BEGIN CERTIFICATE-----")
+    end = pem_text.find("-----END CERTIFICATE-----")
+    if start == -1 or end == -1:
+        raise ValueError("no PEM certificate block found")
+    b64 = "".join(
+        line.strip()
+        for line in pem_text[start:end].splitlines()
+        if not line.startswith("-----")
+    )
+    der = base64.b64decode(b64)
+
+    # ASN.1 TLV reader
+    def _read_tlv(data, pos):
+        if pos >= len(data):
+            raise ValueError("truncated DER")
+        tag = data[pos]
+        pos += 1
+        length = data[pos]
+        pos += 1
+        if length & 0x80:
+            num_bytes = length & 0x7F
+            length = int.from_bytes(data[pos:pos + num_bytes], "big")
+            pos += num_bytes
+        return tag, data[pos:pos + length], pos + length
+
+    # Split top-level SEQUENCE { tbsCertificate, sigAlg, sig }
+    _, cert_value, _ = _read_tlv(der, 0)
+    # tbsCertificate is the first child
+    _, tbs, _ = _read_tlv(cert_value, 0)
+
+    # Walk tbsCertificate children. Fields of interest:
+    #   [0] version (optional)
+    #   [1] serialNumber
+    #   [2] signature
+    #   [3] issuer  (Name)
+    #   [4] validity
+    #   [5] subject (Name)
+    pos = 0
+    children = []
+    while pos < len(tbs):
+        tag, value, nxt = _read_tlv(tbs, pos)
+        children.append((tag, value))
+        pos = nxt
+
+    def _first_attr_value(name_der, oid_bytes):
+        # Name is SEQUENCE OF SET OF SEQUENCE { OID, value }.
+        # Scan the DER for the OID bytes and return the following value.
+        idx = 0
+        while idx < len(name_der):
+            if name_der[idx:idx + len(oid_bytes)] == oid_bytes:
+                after = idx + len(oid_bytes)
+                # value usually UTF8String (0x0c) or PrintableString (0x13)
+                val_tag, val, _ = _read_tlv(name_der, after)
+                if val_tag in (0x0C, 0x13, 0x14, 0x16, 0x1A, 0x1B):
+                    return val.decode("utf-8", errors="replace")
+                return val.decode("latin-1", errors="replace")
+            idx += 1
+        return None
+
+    CN_OID = bytes([0x06, 0x03, 0x55, 0x04, 0x03])
+    O_OID = bytes([0x06, 0x03, 0x55, 0x04, 0x0A])
+
+    def _format_name(name_der):
+        cn = _first_attr_value(name_der, CN_OID)
+        o = _first_attr_value(name_der, O_OID)
+        parts = []
+        if cn:
+            parts.append(f"CN={cn}")
+        if o:
+            parts.append(f"O={o}")
+        return ", ".join(parts) if parts else "unknown"
+
+    subject = children[5][1] if len(children) > 5 else b""
+    issuer = children[3][1] if len(children) > 3 else b""
+
+    # Validity is the fourth field (index 4). It contains two time values.
+    not_after = None
+    if len(children) > 4 and children[4][0] == 0x30:
+        validity = children[4][1]
+        vpos = 0
+        _, _, vpos = _read_tlv(validity, vpos)  # notBefore
+        _, na_value, _ = _read_tlv(validity, vpos)  # notAfter
+        ts = na_value.decode("ascii")
+        if len(ts) == 13:
+            year = int(ts[0:2])
+            year += 2000 if year < 50 else 1900
+            not_after = dt.datetime(year, int(ts[2:4]), int(ts[4:6]), int(ts[6:8]), int(ts[8:10]), int(ts[10:12]), tzinfo=dt.timezone.utc)
+        elif len(ts) >= 15:
+            not_after = dt.datetime(int(ts[0:4]), int(ts[4:6]), int(ts[6:8]), int(ts[8:10]), int(ts[10:12]), int(ts[12:14]), tzinfo=dt.timezone.utc)
+
+    return {
+        "subject": _format_name(subject),
+        "issuer": _format_name(issuer),
+        "not_after": not_after.isoformat() if not_after else None,
+        "days_left": max(0, (not_after - dt.datetime.now(dt.timezone.utc)).days) if not_after else None,
+    }
+
+
+def _cert_info():
+    """Return basic info about the currently installed nginx TLS certificate."""
+    crt = Path(f"{NGINX_CERT_DIR}/{NGINX_CERT_BASENAME}.crt")
+    if not crt.exists():
+        return {"present": False, "subject": None, "issuer": None, "not_after": None, "days_left": None}
+    try:
+        info = _parse_cert_pem(crt.read_text())
+        info["present"] = True
+        return info
+    except Exception as exc:
+        return {"present": True, "error": str(exc), "subject": None, "issuer": None, "not_after": None, "days_left": None}
+
+
 def _set_light(state):
     """Send a light on/off command through Moonraker's gcode/script endpoint.
 
@@ -356,6 +484,7 @@ def collect_status():
             key, text = fut.result()
             logs[key] = text
 
+    cert = _cert_info()
     status = {
         "hostname": hostname,
         "timestamp": now,
@@ -364,6 +493,7 @@ def collect_status():
         "services": services,
         "listeners": listeners,
         "logs": logs,
+        "cert": cert,
     }
     _status_cache["data"] = status
     _status_cache["expires"] = datetime.now(timezone.utc).timestamp() + _status_cache["ttl"]
@@ -375,58 +505,80 @@ HTML_TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{project_name} bridge status</title>
+<title>{project_name} status</title>
 <style>
-:root {{ color-scheme: dark; }}
-body {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background:#0d1117; color:#c9d1d9; margin:0; padding:2rem; line-height:1.5; }}
-h1 {{ color:#58a6ff; margin-bottom:.25rem; }}
-.sub {{ color:#8b949e; margin-bottom:1.5rem; }}
-.grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:1rem; align-items: stretch; }}
-.card {{ background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem; min-width:0; overflow:hidden; display:flex; flex-direction:column; }}
-.card h2 {{ margin:0 0 .75rem; font-size:1rem; color:#79c0ff; flex-shrink:0; }}
-table {{ width:100%; border-collapse: collapse; table-layout: fixed; }}
-th, td {{ text-align:left; padding:.4rem .5rem; overflow-wrap:anywhere; word-break:break-word; vertical-align: middle; }}
-th {{ color:#8b949e; font-weight:normal; border-bottom:1px solid #30363d; }}
+:root {{ color-scheme: dark; --bg: #0d1117; --surface: #161b22; --border: #30363d; --muted: #8b949e; --text: #c9d1d9; --accent: #58a6ff; --accent-2: #79c0ff; --ok: #238636; --fail: #da3633; --warn: #9e6a03; --btn: #1f6feb; --btn-hover: #388bfd; }}
+* {{ box-sizing: border-box; }}
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); margin:0; padding:1rem; line-height:1.5; }}
+.container {{ max-width: 1400px; margin: 0 auto; }}
+header {{ margin-bottom: 1.25rem; padding-bottom: .75rem; border-bottom: 1px solid var(--border); display:flex; flex-wrap:wrap; align-items:baseline; gap:.5rem .75rem; }}
+h1 {{ color: var(--accent); margin:0; font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }}
+.sub {{ color: var(--muted); margin:0; font-size: .9rem; }}
+.grid {{ display:grid; grid-template-columns: repeat(12, 1fr); gap:1rem; align-items: stretch; }}
+.card {{ background: var(--surface); border:1px solid var(--border); border-radius:10px; padding:1rem; min-width:0; overflow:hidden; display:flex; flex-direction:column; grid-column: span 12; }}
+.card h2 {{ margin:0 0 .75rem; font-size:1rem; color: var(--accent-2); font-weight: 600; flex-shrink:0; display:flex; align-items:center; gap:.5rem; }}
+.card h2::before {{ content:""; display:inline-block; width:5px; height:16px; background: var(--accent); border-radius:3px; }}
+@media (min-width: 640px) {{ .card.half {{ grid-column: span 6; }} .card.third {{ grid-column: span 4; }} }}
+@media (min-width: 1024px) {{ .card.third {{ grid-column: span 4; }} .card.half {{ grid-column: span 6; }} }}
+table {{ width:100%; border-collapse: collapse; table-layout: fixed; font-size: .9rem; }}
+th, td {{ text-align:left; padding:.5rem .6rem; overflow-wrap:anywhere; word-break:break-word; vertical-align: middle; }}
+th {{ color: var(--muted); font-weight:600; border-bottom:1px solid var(--border); font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }}
 td {{ border-bottom:1px solid #21262d; }}
 tr:last-child td {{ border-bottom:none; }}
+tr:hover td {{ background: rgba(88,166,255,0.04); }}
 .services td:nth-child(1), .services th:nth-child(1) {{ width: 100%; }}
 .services td:nth-child(2), .services th:nth-child(2),
-.services td:nth-child(3), .services th:nth-child(3) {{ width: 1%; white-space: nowrap; }}
-.listeners td:nth-child(1), .listeners th:nth-child(1) {{ width: 100%; }}
-.listeners td:nth-child(2), .listeners th:nth-child(2) {{ width: 1%; white-space: nowrap; }}
-.quick-checks td:nth-child(1), .quick-checks th:nth-child(1) {{ width: 1%; white-space: nowrap; }}
-.quick-checks td:nth-child(2), .quick-checks th:nth-child(2) {{ width: 100%; }}
-.badge {{ display:inline-block; padding:.15rem .5rem; border-radius:999px; font-size:.75rem; font-weight:bold; white-space:nowrap; }}
-.ok {{ background:#238636; color:#fff; }}
-.fail {{ background:#da3633; color:#fff; }}
-.warn {{ background:#9e6a03; color:#fff; }}
-pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:.75rem; overflow:auto; font-size:.8rem; max-height:12rem; white-space:pre-wrap; word-break:break-word; }}
-.footer {{ margin-top:2rem; color:#8b949e; font-size:.8rem; }}
-.note {{ margin-top:1rem; color:#8b949e; font-size:.85rem; background:#161b22; border:1px solid #30363d; border-radius:6px; padding:.75rem; }}
-.btn {{ background:#1f6feb; color:#fff; border:1px solid #388bfd; border-radius:6px; padding:.5rem 1rem; font-size:.9rem; cursor:pointer; margin-right:.5rem; }}
-.btn:hover {{ background:#388bfd; }}
+.services td:nth-child(3), .services th:nth-child(3) {{ width: 4.5rem; white-space: nowrap; text-align: center; }}
+.services td:nth-child(2) .badge, .services td:nth-child(3) .badge {{ display: inline-flex; align-items: center; justify-content: center; min-width: 3.6rem; }}
+.listeners td:nth-child(1), .listeners th:nth-child(1) {{ width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .82rem; }}
+.listeners td:nth-child(2), .listeners th:nth-child(2) {{ width: 4.5rem; white-space: nowrap; text-align: right; }}
+.listeners td:nth-child(2) .badge {{ display: inline-flex; align-items: center; justify-content: center; min-width: 3.6rem; }}
+.quick-checks td:nth-child(1), .quick-checks th:nth-child(1) {{ width: 1%; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .82rem; color: var(--muted); }}
+.quick-checks td:nth-child(2), .quick-checks th:nth-child(2) {{ width: 100%; text-align: right; }}
+.badge {{ display:inline-block; padding:.2rem .55rem; border-radius:999px; font-size:.72rem; font-weight:700; white-space:nowrap; line-height:1; }}
+.ok {{ background: var(--ok); color:#fff; }}
+.fail {{ background: var(--fail); color:#fff; }}
+.warn {{ background: var(--warn); color:#fff; }}
+pre {{ background: var(--bg); border:1px solid var(--border); border-radius:8px; padding:.75rem; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:.8rem; max-height:14rem; white-space:pre-wrap; word-break:break-word; flex-grow:1; margin:0; }}
+.footer {{ margin-top:2rem; color: var(--muted); font-size:.8rem; text-align:center; }}
+.note {{ color: var(--muted); font-size:.85rem; background: var(--surface); border:1px solid var(--border); border-radius:8px; padding:.85rem; line-height:1.55; }}
+.note code {{ background: rgba(110,118,129,0.25); padding:.1rem .3rem; border-radius:4px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:.8rem; color: var(--text); }}
+.cert-ok {{ color: var(--ok); font-weight: 600; }}
+.cert-warn {{ color: var(--warn); font-weight: 600; }}
+.cert-fail {{ color: var(--fail); font-weight: 600; }}
+.btn-group {{ display:flex; gap:.5rem; flex-wrap: wrap; }}
+input[type="file"] {{ color: var(--text); font-size: .85rem; }}
+.upload-row {{ display:flex; gap:.5rem; align-items: center; flex-wrap: wrap; }}
+.mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .85rem; }}
+.btn {{ background: var(--btn); color:#fff; border:1px solid var(--btn-hover); border-radius:6px; padding:.45rem 1rem; font-size:.9rem; font-weight: 500; cursor:pointer; transition: background .15s ease; }}
+.btn:hover {{ background: var(--btn-hover); }}
 .btn:disabled {{ opacity:.6; cursor:not-allowed; }}
+.led-row {{ display:flex; align-items:center; gap:1rem; flex-wrap: wrap; margin-bottom:.75rem; }}
+.led-row .sub {{ margin:0; }}
 </style>
 </head>
 <body>
-<h1>🖨️ {project_name} bridge status</h1>
-<p class="sub">{hostname} · {timestamp} · uptime {uptime} · load {load}</p>
+<div class="container">
+<header>
+  <h1>🖨️ {project_name} status</h1>
+  <p class="sub">{hostname} · {timestamp} · uptime {uptime} · load {load}</p>
+</header>
 <div class="grid">
-  <div class="card">
+  <div class="card half">
     <h2>Services</h2>
     <table class="services">
       <tr><th>Name</th><th>Enabled</th><th>Running</th></tr>
       {services_rows}
     </table>
   </div>
-  <div class="card">
+  <div class="card half">
     <h2>Listeners</h2>
     <table class="listeners">
       <tr><th>Port</th><th>State</th></tr>
       {listeners_rows}
     </table>
   </div>
-  <div class="card" style="grid-column: 1 / -1;">
+  <div class="card">
     <h2>Quick checks</h2>
     <table class="quick-checks">
       <tr><td>HTTP /camera.mjpeg</td><td>{camera_mjpeg_http}</td></tr>
@@ -440,41 +592,59 @@ pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:
       <tr><td>/server/info</td><td>{server_info}</td></tr>
     </table>
   </div>
-  <div class="card" style="grid-column: 1 / -1;">
+  <div class="card">
     <h2>Chamber / camera LED</h2>
-    <p class="sub">State: <span id="light-state" class="badge warn">checking...</span></p>
-    <p>
-      <button class="btn" id="light-on" onclick="setLight('on')">Light on</button>
-      <button class="btn" id="light-off" onclick="setLight('off')">Light off</button>
-    </p>
-    <p id="light-detail" class="note"></p>
+    <div class="led-row">
+      <p class="sub">State: <span id="light-state" class="badge warn">checking...</span></p>
+      <div class="btn-group">
+        <button class="btn" id="light-on" onclick="setLight('on')">Light on</button>
+        <button class="btn" id="light-off" onclick="setLight('off')">Light off</button>
+      </div>
+    </div>
+    <p id="light-detail" class="note" style="display:none;"></p>
     <p class="note">Simple REST: <code>GET /{status_path}/api/light/simple</code> returns <code>on</code>/<code>off</code>/<code>unknown</code>. <code>GET /{status_path}/api/light/set?state=on</code> toggles it. Homebridge example in docs.</p>
   </div>
   <div class="card">
+    <h2>TLS certificate</h2>
+    <div id="cert-info">
+      <p class="sub"><strong class="mono">{cert_subject}</strong><br>Issuer: <span class="mono">{cert_issuer}</span><br>Expires: {cert_not_after} · {cert_days_left} days left</p>
+      <p class="sub {cert_status_class}">{cert_status_text}</p>
+    </div>
+    <div class="upload-row" style="margin-top:.75rem;">
+      <label for="cert-file" class="btn" style="display:inline-block;">Choose cert + key archive</label>
+      <input type="file" id="cert-file" accept=".zip,.tar,.tar.gz,.tgz" style="display:none;" onchange="document.getElementById('cert-filename').textContent = this.files[0]?.name || '';">
+      <span id="cert-filename" class="mono"></span>
+      <button class="btn" id="cert-upload" onclick="uploadCert()">Install</button>
+    </div>
+    <p id="cert-detail-note" class="note" style="margin-top:.75rem; display:none;"></p>
+    <p class="note" style="margin-top:.75rem;">Upload a ZIP or tarball containing <code>{cert_basename}.crt</code> and <code>{cert_basename}.key</code>. After install, nginx reloads automatically. You can still manage certs via SSH with <code>./install.sh cert ./certs</code>.</p>
+  </div>
+  <div class="card third">
     <h2>lan_bridge log tail</h2>
     <pre>{lan_bridge_tail}</pre>
   </div>
-  <div class="card">
+  <div class="card third">
     <h2>mjpeg_server log tail</h2>
     <pre>{mjpeg_server_tail}</pre>
   </div>
-  <div class="card">
+  <div class="card third">
     <h2>go2rtc log tail</h2>
     <pre>{go2rtc_tail}</pre>
   </div>
-  <div class="card">
+  <div class="card half">
     <h2>webrtc log tail</h2>
     <pre>{webrtc_tail}</pre>
   </div>
-  <div class="card">
+  <div class="card half">
     <h2>Monitor log tail</h2>
     <pre>{monitor_tail}</pre>
   </div>
 </div>
 <p class="note"><strong>Note:</strong> The stock <code>/etc/init.d/app</code> is disabled so only <code>/etc/init.d/app_cloud_only</code> starts at boot. The <code>/usr/bin/Monitor</code> process (which respawned <code>web-server</code>, <code>display-server</code>, and <code>webrtc_local</code>) has been stopped and did not respawn. "manual" services are started by our camera-stack init even though their stock init script is disabled at boot. The camera stack uses a single <code>cam_app</code> source; the separate <code>cloud_webrtc_bridge.py</code> feeder has been retired.</p>
 <p class="footer">Served by {project_name} status page on {bind}:{port}</p>
+</div>
 <script>
-const API = window.location.pathname.replace(/\\/$/, '') + '/api/light';
+const API = window.location.pathname.replace(/\/$/, '') + '/api/light';
 async function refreshLight() {{
   try {{
     const r = await fetch(API);
@@ -487,21 +657,78 @@ async function refreshLight() {{
   }}
 }}
 async function setLight(state) {{
+  const detail = document.getElementById('light-detail');
   document.getElementById('light-on').disabled = true;
   document.getElementById('light-off').disabled = true;
+  detail.style.display = 'block';
   try {{
     const r = await fetch(API, {{ method: 'POST', headers: {{'Content-Type':'application/x-www-form-urlencoded'}}, body: 'state=' + state }});
     const j = await r.json();
-    document.getElementById('light-detail').textContent = j.ok ? ('OK: ' + j.detail) : ('Error: ' + j.detail);
+    detail.textContent = j.ok ? ('OK: ' + j.detail) : ('Error: ' + j.detail);
     await refreshLight();
   }} catch (e) {{
-    document.getElementById('light-detail').textContent = 'Error: ' + e;
+    detail.textContent = 'Error: ' + e;
   }} finally {{
     document.getElementById('light-on').disabled = false;
     document.getElementById('light-off').disabled = false;
   }}
 }}
 refreshLight();
+refreshCert();
+
+async function refreshCert() {{
+  try {{
+    const r = await fetch(API.replace('/api/light', '/api/cert'));
+    const c = await r.json();
+    const el = document.getElementById('cert-info');
+    if (!c.present) {{
+      el.innerHTML = '<p class="sub cert-fail">No certificate found at <span class="mono">{cert_path}</span>.</p>';
+      return;
+    }}
+    if (c.error) {{
+      el.innerHTML = '<p class="sub cert-fail">Error reading certificate: ' + escapeHtml(c.error) + '</p>';
+      return;
+    }}
+    const statusClass = c.days_left === null ? 'cert-warn' : c.days_left < 7 ? 'cert-fail' : c.days_left < 30 ? 'cert-warn' : 'cert-ok';
+    const daysText = c.days_left === null ? '' : ' · ' + c.days_left + ' day' + (c.days_left === 1 ? '' : 's') + ' left';
+    el.innerHTML = '<p class="sub"><strong>' + escapeHtml(c.subject || 'unknown') + '</strong><br>Issuer: ' + escapeHtml(c.issuer || 'unknown') + '<br>Expires: ' + escapeHtml(c.not_after || 'unknown') + daysText + '</p><p class="sub ' + statusClass + '">' + (c.days_left === null ? 'Unable to compute expiry' : c.days_left < 0 ? 'Expired' : c.days_left < 7 ? 'Expires soon' : 'Certificate OK') + '</p>';
+  }} catch (e) {{
+    document.getElementById('cert-info').innerHTML = '<p class="sub cert-fail">Error loading certificate info: ' + escapeHtml(e.message || e) + '</p>';
+  }}
+}}
+
+async function uploadCert() {{
+  const fileInput = document.getElementById('cert-file');
+  const detail = document.getElementById('cert-detail-note');
+  const btn = document.getElementById('cert-upload');
+  if (!fileInput.files.length) {{
+    detail.style.display = 'block';
+    detail.textContent = 'Please choose a cert archive first.';
+    return;
+  }}
+  btn.disabled = true;
+  btn.textContent = 'Uploading...';
+  detail.style.display = 'block';
+  detail.textContent = 'Uploading...';
+  try {{
+    const body = new FormData();
+    body.append('archive', fileInput.files[0]);
+    const r = await fetch(API.replace('/api/light', '/api/cert'), {{ method: 'POST', body }});
+    const j = await r.json();
+    detail.textContent = j.ok ? ('OK: ' + j.detail) : ('Error: ' + j.detail);
+    if (j.ok) setTimeout(() => location.reload(), 1200);
+  }} catch (e) {{
+    detail.textContent = 'Upload failed: ' + e;
+  }} finally {{
+    btn.disabled = false;
+    btn.textContent = 'Install';
+  }}
+}}
+
+function escapeHtml(str) {{
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/[&<>"']/g, function(m) {{ return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[m]; }});
+}}
 </script>
 </body>
 </html>"""
@@ -721,6 +948,82 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         return self.rfile.read(length).decode() if length > 0 else ""
 
+    def _read_multipart_archive(self):
+        """Extract the first file upload from a multipart body and return (filename, bytes)."""
+        content_type = self.headers.get("Content-Type", "")
+        if not content_type.startswith("multipart/"):
+            return None, None
+        boundary = None
+        for part in content_type.split(";"):
+            part = part.strip()
+            if part.startswith("boundary="):
+                boundary = part.split("=", 1)[1].strip('"')
+                break
+        if not boundary:
+            return None, None
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        boundary_b = ("--" + boundary).encode()
+        parts = body.split(boundary_b)
+        for part in parts:
+            part = part.lstrip(b"\r\n")
+            if b"\r\n\r\n" not in part:
+                continue
+            header, data = part.split(b"\r\n\r\n", 1)
+            disp = header.decode("latin-1")
+            if "filename=" in disp and "name=\"archive\"" in disp:
+                filename = re.search(r'filename="([^"]+)"', disp)
+                filename = filename.group(1) if filename else "archive"
+                data = data.rstrip(b"\r\n")
+                if data.endswith(b"--"):
+                    data = data[:-2]
+                return filename, data
+        return None, None
+
+    def _install_cert_archive(self, filename, data):
+        """Save uploaded archive, extract .crt/.key matching basename, reload nginx."""
+        crt_name = f"{NGINX_CERT_BASENAME}.crt"
+        key_name = f"{NGINX_CERT_BASENAME}.key"
+        tmpdir = tempfile.mkdtemp(prefix="cert_upload_")
+        try:
+            archive_path = Path(tmpdir) / filename
+            archive_path.write_bytes(data)
+            extract_dir = Path(tmpdir) / "extracted"
+            extract_dir.mkdir()
+
+            lower = filename.lower()
+            if lower.endswith(".zip"):
+                with zipfile.ZipFile(archive_path, "r") as zf:
+                    zf.extractall(extract_dir)
+            elif lower.endswith((".tar", ".tar.gz", ".tgz")):
+                mode = "r:gz" if lower.endswith((".tar.gz", ".tgz")) else "r"
+                with tarfile.open(archive_path, mode) as tf:
+                    tf.extractall(extract_dir)
+            else:
+                return False, "unsupported archive format (use .zip, .tar, .tar.gz, .tgz)"
+
+            crt_files = list(extract_dir.rglob(crt_name))
+            key_files = list(extract_dir.rglob(key_name))
+            if not crt_files:
+                return False, f"{crt_name} not found in archive"
+            if not key_files:
+                return False, f"{key_name} not found in archive"
+
+            shutil.copy2(crt_files[0], Path(NGINX_CERT_DIR) / crt_name)
+            shutil.copy2(key_files[0], Path(NGINX_CERT_DIR) / key_name)
+            subprocess.run(["chmod", "600", str(Path(NGINX_CERT_DIR) / key_name)], check=True)
+            result = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
+            if result.returncode != 0:
+                return False, f"nginx config test failed: {result.stderr.strip()}"
+            subprocess.run(["/etc/init.d/nginx", "reload"], check=True)
+            return True, "certificate installed and nginx reloaded"
+        except subprocess.CalledProcessError as exc:
+            return False, f"command failed: {exc}"
+        except Exception as exc:
+            return False, str(exc)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
     def do_POST(self):
         status_prefix = f"/{STATUS_PATH}"
         if self.path.startswith(f"{status_prefix}/api/light"):
@@ -742,6 +1045,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             ok, detail = _set_light(state)
             self._json({"ok": ok, "state": _light_state["state"], "detail": detail})
+            return
+        if self.path.startswith(f"{status_prefix}/api/cert"):
+            filename, data = self._read_multipart_archive()
+            if data is None:
+                self.send_error(400, "expected multipart file upload named 'archive'")
+                return
+            ok, detail = self._install_cert_archive(filename, data)
+            self._json({"ok": ok, "detail": detail})
             return
         self.send_error(404)
 
@@ -769,6 +1080,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path_only == f"{status_prefix}/api/status.json":
             self._json(collect_status())
+            return
+        if path_only == f"{status_prefix}/api/cert":
+            self._json(_cert_info())
             return
         if path_only in (f"{status_prefix}/", status_prefix):
             # Collect service/listener state and probe public endpoints in
@@ -805,6 +1119,24 @@ class Handler(BaseHTTPRequestHandler):
             info_http = quick_results.get("info_http", "<span class=\"badge fail\">missing</span>")
             protocal_http = quick_results.get("protocal_http", "<span class=\"badge fail\">missing</span>")
             server_info = quick_results.get("server_info", "<span class=\"badge fail\">missing</span>")
+            cert = data["cert"]
+            cert_status_class = "cert-warn"
+            cert_status_text = "Unknown"
+            if not cert.get("present"):
+                cert_status_class = "cert-fail"
+                cert_status_text = "Missing"
+            elif cert.get("error"):
+                cert_status_class = "cert-fail"
+                cert_status_text = "Error"
+            elif cert.get("days_left") is not None:
+                if cert["days_left"] < 0:
+                    cert_status_class, cert_status_text = "cert-fail", "Expired"
+                elif cert["days_left"] < 7:
+                    cert_status_class, cert_status_text = "cert-fail", "Expires soon"
+                elif cert["days_left"] < 30:
+                    cert_status_class, cert_status_text = "cert-warn", "Expires soon"
+                else:
+                    cert_status_class, cert_status_text = "cert-ok", "OK"
             html = HTML_TEMPLATE.format(
                 hostname=data["hostname"],
                 timestamp=data["timestamp"],
@@ -830,6 +1162,14 @@ class Handler(BaseHTTPRequestHandler):
                 port=PORT,
                 project_name=PROJECT_NAME,
                 status_path=STATUS_PATH,
+                cert_basename=NGINX_CERT_BASENAME,
+                cert_path=f"{NGINX_CERT_DIR}/{NGINX_CERT_BASENAME}.crt",
+                cert_status_class=cert_status_class,
+                cert_status_text=cert_status_text,
+                cert_subject=cert.get("subject") or "unknown",
+                cert_issuer=cert.get("issuer") or "unknown",
+                cert_not_after=cert.get("not_after") or "unknown",
+                cert_days_left=str(cert.get("days_left")) if cert.get("days_left") is not None else "unknown",
             )
             self._html(html)
             return

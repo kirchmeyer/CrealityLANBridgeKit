@@ -10,7 +10,7 @@ PROG=/usr/local/bin/status_page.py
 
 start_service() {
     procd_open_instance status_page
-    procd_set_param env HOME=/root PROJECT_NAME="%PROJECT_NAME%" STATUS_PATH="%STATUS_PATH%" STATUS_BIND="127.0.0.1" STATUS_PORT="8765"
+    procd_set_param env HOME=/root PROJECT_NAME="%PROJECT_NAME%" STATUS_PATH="%STATUS_PATH%" STATUS_BIND="127.0.0.1" STATUS_PORT="8765" NGINX_CERT_BASENAME="%CERT_BASENAME%" NGINX_CERT_DIR="/etc/nginx/conf.d"
     procd_set_param command /usr/bin/python3 "$PROG"
     procd_set_param stdout 1
     procd_set_param stderr 1
