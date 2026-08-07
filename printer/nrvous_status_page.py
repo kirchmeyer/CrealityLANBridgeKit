@@ -5,11 +5,15 @@ Served at /nrvous-status/ via nginx. The path prefix is deliberately unlikely to
 clash with stock Creality, Fluidd, moonraker, or go2rtc routes.
 
 Reflects the current printer-side stack:
-  - lan_bridge (Creality app compatibility, 127.0.0.1:9002)
-  - mjpeg_server (RTSP -> MJPEG for LAN app / Fluidd, 127.0.0.1:8081)
-  - go2rtc (camera RTSP source, :8554 / :1984)
-  - moonraker (:7125)
-  - klipper + nginx + stock app
+  - nginx front door (:80 / :443)
+  - lan_bridge (Creality app WebSocket compatibility, 127.0.0.1:9002 -> :9999)
+  - Single-source camera stack:
+      cam_app -> cam_delivery_bridge -> /tmp/uvc_fifo + /tmp/go2rtc_cam.fifo
+      go2rtc (:8554 RTSP, :1984 API) -> mjpeg_server (:8081 MJPEG)
+      webrtc_local_bridge (:8000) for Creality Print LAN camera
+      cloud_webrtc_bridge (/tmp/uvc_fifo feeder) -> stock webrtc for Creality Cloud
+  - moonraker (:7125) + klipper
+  - app_cloud_only (stock app minus web-server; stock /etc/init.d/app disabled)
 """
 import concurrent.futures
 import json
@@ -158,26 +162,37 @@ def collect_status():
     service_specs = [
         ("nginx", "nginx", "nginx"),
         ("lan_bridge", "python3 /usr/local/bin/lan_bridge.py", "lan_bridge"),
-        ("mjpeg_server", "python3 /usr/local/bin/mjpeg_server.py", "mjpeg_server"),
+        ("app_cloud_only", "/usr/bin/app-server", "app_cloud_only"),
+        ("stock app (disabled)", "/usr/bin/web-server", "app"),
         ("go2rtc", "go2rtc", "go2rtc"),
+        ("cam_app", "/usr/bin/cam_app", "go2rtc"),
+        ("cam_delivery_bridge", "python3 /usr/local/bin/cam_delivery_bridge.py", "go2rtc"),
+        ("cloud_webrtc_bridge", "python3 /usr/local/bin/cloud_webrtc_bridge.py", "go2rtc"),
+        ("webrtc_local_bridge", "python3 /usr/local/bin/webrtc_local_bridge.py", "webrtc_local_bridge"),
+        ("webrtc (cloud)", "/usr/bin/webrtc", "webrtc"),
+        ("mjpeg_server", "python3 /usr/local/bin/mjpeg_server.py", "mjpeg_server"),
         ("moonraker", "moonraker.py", "moonraker"),
         ("klipper", "klippy.py", "klipper"),
-        ("app (stock)", "/usr/bin/web-server", "app"),
     ]
     listener_specs = [
         ("80 (nginx HTTP)", 80),
         ("443 (nginx HTTPS)", 443),
+        ("9999 (lan_bridge WS)", 9999),
         ("7125 (moonraker)", 7125),
         ("7130 (Fluidd WSS fallback)", 7130),
+        ("8080 (nginx MJPEG fallback)", 8080),
         ("8081 (mjpeg_server)", 8081),
         ("9002 (lan_bridge)", 9002),
         ("1984 (go2rtc HTTP)", 1984),
         ("8554 (go2rtc RTSP)", 8554),
+        ("8000 (webrtc_local_bridge)", 8000),
     ]
     log_specs = [
         ("lan_bridge_tail", "lan_bridge"),
         ("mjpeg_server_tail", "mjpeg_server"),
         ("go2rtc_tail", "go2rtc"),
+        ("webrtc_tail", "webrtc"),
+        ("monitor_tail", "Monitor"),
     ]
 
     # Run service, listener, and log probes in parallel; the slowest bucket
@@ -258,8 +273,11 @@ pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:
     <h2>Quick checks</h2>
     <table>
       <tr><td>HTTP /camera.mjpeg</td><td>{camera_mjpeg_http}</td></tr>
+      <tr><td>HTTP /webcam/cam.jpg</td><td>{webcam_cam_jpg_http}</td></tr>
       <tr><td>HTTP /webcam/stream.mjpg</td><td>{webcam_stream_http}</td></tr>
+      <tr><td>WS :9999 upgrade</td><td>{ws_upgrade}</td></tr>
       <tr><td>go2rtc /api/streams</td><td>{streams_http}</td></tr>
+      <tr><td>go2rtc /webcam/api/ws</td><td>{go2rtc_ws_http}</td></tr>
       <tr><td>/info</td><td>{info_http}</td></tr>
       <tr><td>/protocal.csp</td><td>{protocal_http}</td></tr>
       <tr><td>/server/info</td><td>{server_info}</td></tr>
@@ -276,6 +294,14 @@ pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:
   <div class="card">
     <h2>go2rtc log tail</h2>
     <pre>{go2rtc_tail}</pre>
+  </div>
+  <div class="card">
+    <h2>webrtc log tail</h2>
+    <pre>{webrtc_tail}</pre>
+  </div>
+  <div class="card">
+    <h2>Monitor log tail</h2>
+    <pre>{monitor_tail}</pre>
   </div>
 </div>
 <p class="footer">Served by nrvous_status_page.py on {bind}:{port}</p>
@@ -298,6 +324,53 @@ def check_url(url, host=None, timeout=2):
         return f'<span class="badge fail">{exc}</span>'
 
 
+def check_websocket_upgrade(url, host=None, timeout=2):
+    """Probe a WebSocket endpoint by performing the handshake manually.
+
+    Works for ws:// and http:// URLs that expect an Upgrade handshake.
+    Returns an ok badge only on HTTP 101 Switching Protocols.
+    """
+    import urllib.request
+    import urllib.parse
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme
+    netloc = parsed.netloc or host or "127.0.0.1"
+    path = parsed.path or "/"
+    if scheme not in ("ws", "wss", "http", "https"):
+        return '<span class="badge fail">unsupported scheme</span>'
+    use_ssl = scheme in ("wss", "https")
+    host_header = host or netloc
+    try:
+        # Strip :port for Host header if netloc was used.
+        bare_host = host_header.split(":")[0]
+        lines = [
+            f"GET {path} HTTP/1.1",
+            f"Host: {bare_host}",
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+            "Sec-WebSocket-Version: 13",
+            "",
+            "",
+        ]
+        request_bytes = ("\r\n".join(lines)).encode("latin-1")
+        port = parsed.port or (443 if use_ssl else 80)
+        s = socket.create_connection((bare_host, port), timeout=timeout)
+        if use_ssl:
+            import ssl
+            s = ssl.create_default_context().wrap_socket(s, server_hostname=bare_host)
+        s.sendall(request_bytes)
+        response = s.recv(4096).decode("latin-1", errors="replace")
+        s.close()
+        status_line = response.split("\r\n", 1)[0]
+        parts = status_line.split()
+        if len(parts) >= 2 and parts[1] == "101":
+            return f'<span class="badge ok">{status_line}</span>'
+        return f'<span class="badge warn">{status_line}</span>'
+    except Exception as exc:
+        return f'<span class="badge fail">{exc}</span>'
+
+
 def _run_quick_checks():
     """Hit a handful of public endpoints in parallel and return HTML badge strings."""
     import functools
@@ -309,12 +382,23 @@ def _run_quick_checks():
         "camera_mjpeg_http": functools.partial(
             check_url, "http://127.0.0.1/camera.mjpeg", timeout=2
         ),
+        "webcam_cam_jpg_http": functools.partial(
+            check_url, "http://127.0.0.1/webcam/cam.jpg", timeout=2
+        ),
         "webcam_stream_http": functools.partial(
             check_url, "http://127.0.0.1/webcam/stream.mjpg", timeout=2
+        ),
+        "ws_upgrade": functools.partial(
+            check_websocket_upgrade, "ws://127.0.0.1:9999", timeout=2
         ),
         "streams_http": functools.partial(
             check_url,
             "http://127.0.0.1:1984/api/streams",
+            timeout=2,
+        ),
+        "go2rtc_ws_http": functools.partial(
+            check_websocket_upgrade,
+            "ws://127.0.0.1/webcam/api/ws",
             timeout=2,
         ),
         "info_http": functools.partial(check_url, "http://127.0.0.1/info", timeout=2),
@@ -418,8 +502,11 @@ class Handler(BaseHTTPRequestHandler):
                 for port, ok in data["listeners"].items()
             )
             camera_mjpeg_http = quick_results.get("camera_mjpeg_http", "<span class=\"badge fail\">missing</span>")
+            webcam_cam_jpg_http = quick_results.get("webcam_cam_jpg_http", "<span class=\"badge fail\">missing</span>")
             webcam_stream_http = quick_results.get("webcam_stream_http", "<span class=\"badge fail\">missing</span>")
+            ws_upgrade = quick_results.get("ws_upgrade", "<span class=\"badge fail\">missing</span>")
             streams_http = quick_results.get("streams_http", "<span class=\"badge fail\">missing</span>")
+            go2rtc_ws_http = quick_results.get("go2rtc_ws_http", "<span class=\"badge fail\">missing</span>")
             info_http = quick_results.get("info_http", "<span class=\"badge fail\">missing</span>")
             protocal_http = quick_results.get("protocal_http", "<span class=\"badge fail\">missing</span>")
             server_info = quick_results.get("server_info", "<span class=\"badge fail\">missing</span>")
@@ -431,14 +518,19 @@ class Handler(BaseHTTPRequestHandler):
                 services_rows=services_rows,
                 listeners_rows=listeners_rows,
                 camera_mjpeg_http=camera_mjpeg_http,
+                webcam_cam_jpg_http=webcam_cam_jpg_http,
                 webcam_stream_http=webcam_stream_http,
+                ws_upgrade=ws_upgrade,
                 streams_http=streams_http,
+                go2rtc_ws_http=go2rtc_ws_http,
                 info_http=info_http,
                 protocal_http=protocal_http,
                 server_info=server_info,
                 lan_bridge_tail=data["logs"]["lan_bridge_tail"],
                 mjpeg_server_tail=data["logs"]["mjpeg_server_tail"],
                 go2rtc_tail=data["logs"]["go2rtc_tail"],
+                webrtc_tail=data["logs"]["webrtc_tail"],
+                monitor_tail=data["logs"]["monitor_tail"],
                 bind=BIND,
                 port=PORT,
             )
