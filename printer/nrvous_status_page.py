@@ -192,7 +192,7 @@ def collect_status():
         ("nginx", "nginx", "nginx"),
         ("lan_bridge", "python3 /usr/local/bin/lan_bridge.py", "lan_bridge"),
         ("app_cloud_only", "/usr/bin/app-server", "app_cloud_only"),
-        ("stock app (disabled)", "/usr/bin/web-server", "app"),
+        ("Monitor (disabled)", "/usr/bin/Monitor", "app"),
         ("go2rtc", "go2rtc", "go2rtc"),
         ("cam_app", "/usr/bin/cam_app", "go2rtc"),
         ("cam_delivery_bridge", "python3 /usr/local/bin/cam_delivery_bridge.py", "go2rtc"),
@@ -335,7 +335,7 @@ pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:
     <pre>{monitor_tail}</pre>
   </div>
 </div>
-<p class="note"><strong>Note:</strong> The stock <code>/etc/init.d/app</code> is disabled so only <code>/etc/init.d/app_cloud_only</code> starts at boot. A leftover <code>web-server</code> process keeps respawning (it is no longer listening on :80/:443; nginx owns those ports). "manual" services are started by our camera-stack init even though their stock init script is disabled at boot. The camera stack uses a single <code>cam_app</code> source; the separate <code>cloud_webrtc_bridge.py</code> feeder has been retired.</p>
+<p class="note"><strong>Note:</strong> The stock <code>/etc/init.d/app</code> is disabled so only <code>/etc/init.d/app_cloud_only</code> starts at boot. The <code>/usr/bin/Monitor</code> process (which respawned <code>web-server</code>, <code>display-server</code>, and <code>webrtc_local</code>) has been stopped and did not respawn. "manual" services are started by our camera-stack init even though their stock init script is disabled at boot. The camera stack uses a single <code>cam_app</code> source; the separate <code>cloud_webrtc_bridge.py</code> feeder has been retired.</p>
 <p class="footer">Served by nrvous_status_page.py on {bind}:{port}</p>
 </body>
 </html>"""
