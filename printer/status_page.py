@@ -617,7 +617,7 @@ input[type="file"] {{ color: var(--text); font-size: .85rem; }}
       <button class="btn" id="cert-upload" onclick="uploadCert()">Install</button>
     </div>
     <p id="cert-detail-note" class="note" style="margin-top:.75rem; display:none;"></p>
-    <p class="note" style="margin-top:.75rem;">Upload a ZIP or tarball containing <code>{cert_basename}.crt</code> and <code>{cert_basename}.key</code>. After install, nginx reloads automatically. You can still manage certs via SSH with <code>./install.sh cert ./certs</code>.</p>
+    <p class="note" style="margin-top:.75rem;">Upload a ZIP or tarball containing <code>&lt;basename&gt;.crt</code> and <code>&lt;basename&gt;.key</code>, where <code>&lt;basename&gt;</code> matches the configured certificate name. After install, nginx reloads automatically. You can still manage certs via SSH with <code>./install.sh cert ./certs</code>.</p>
   </div>
   <div class="card third">
     <h2>lan_bridge log tail</h2>
