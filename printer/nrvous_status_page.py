@@ -30,7 +30,7 @@ PORT = int(os.environ.get("NRVOUS_STATUS_PORT", "8765"))
 BIND = os.environ.get("NRVOUS_STATUS_BIND", "127.0.0.1")
 
 
-def run(cmd, timeout=2):
+def run(cmd, timeout=1):
     try:
         return subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=timeout
@@ -43,7 +43,7 @@ def is_listening(port, proto="tcp"):
     # Pure-python connect probe: avoids the fork overhead of netstat/grep on a
     # busy embedded system. All ports we probe are TCP services.
     try:
-        s = socket.create_connection(("127.0.0.1", port), timeout=0.4)
+        s = socket.create_connection(("127.0.0.1", port), timeout=0.25)
         s.close()
         return True
     except Exception:
@@ -74,6 +74,7 @@ def is_running(pattern):
             ["pgrep", "-f", pattern],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=1,
         ).returncode
         return rc == 0
     except Exception:
@@ -196,7 +197,7 @@ def collect_status():
         ("cam_app", "/usr/bin/cam_app", "go2rtc"),
         ("cam_delivery_bridge", "python3 /usr/local/bin/cam_delivery_bridge.py", "go2rtc"),
         ("webrtc_local_bridge", "python3 /usr/local/bin/webrtc_local_bridge.py", "webrtc_local_bridge"),
-        ("webrtc cloud (orphan)", "/usr/bin/webrtc", "webrtc"),
+        ("webrtc (cloud, manual)", "/usr/bin/webrtc", "webrtc"),
         ("mjpeg_server", "python3 /usr/local/bin/mjpeg_server.py", "mjpeg_server"),
         ("moonraker", "moonraker.py", "moonraker"),
         ("klipper", "klippy.py", "klipper"),
@@ -334,7 +335,7 @@ pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:
     <pre>{monitor_tail}</pre>
   </div>
 </div>
-<p class="note"><strong>Note:</strong> "orphan" services are running processes left over from the stock init but no longer started at boot. The camera stack uses a single <code>cam_app</code> source; the separate <code>cloud_webrtc_bridge.py</code> feeder has been retired.</p>
+<p class="note"><strong>Note:</strong> "orphan" services are running processes left over from the stock <code>/etc/init.d/app</code> but no longer started at boot. "manual" services are started by our camera-stack init even though their stock init script is disabled at boot. The camera stack uses a single <code>cam_app</code> source; the separate <code>cloud_webrtc_bridge.py</code> feeder has been retired.</p>
 <p class="footer">Served by nrvous_status_page.py on {bind}:{port}</p>
 </body>
 </html>"""
@@ -411,39 +412,39 @@ def _run_quick_checks():
 
     checks = {
         "camera_mjpeg_http": functools.partial(
-            check_url, "http://127.0.0.1/camera.mjpeg", timeout=2
+            check_url, "http://127.0.0.1/camera.mjpeg", timeout=1
         ),
         "webcam_cam_jpg_http": functools.partial(
-            check_url, "http://127.0.0.1/webcam/cam.jpg", timeout=2
+            check_url, "http://127.0.0.1/webcam/cam.jpg", timeout=1
         ),
         "webcam_stream_http": functools.partial(
-            check_url, "http://127.0.0.1/webcam/stream.mjpg", timeout=2
+            check_url, "http://127.0.0.1/webcam/stream.mjpg", timeout=1
         ),
         "ws_upgrade": functools.partial(
-            check_websocket_upgrade, "ws://127.0.0.1:9999", timeout=2
+            check_websocket_upgrade, "ws://127.0.0.1:9999", timeout=1
         ),
         "streams_http": functools.partial(
             check_url,
             "http://127.0.0.1:1984/api/streams",
-            timeout=2,
+            timeout=1,
         ),
         "go2rtc_ws_http": functools.partial(
             check_websocket_upgrade,
             "ws://127.0.0.1/webcam/api/ws",
-            timeout=2,
+            timeout=1,
         ),
-        "info_http": functools.partial(check_url, "http://127.0.0.1/info", timeout=2),
+        "info_http": functools.partial(check_url, "http://127.0.0.1/info", timeout=1),
         "protocal_http": functools.partial(
-            check_url, "http://127.0.0.1/protocal.csp", timeout=2
+            check_url, "http://127.0.0.1/protocal.csp", timeout=1
         ),
         "server_info": functools.partial(
-            check_url, "http://127.0.0.1/server/info", timeout=2
+            check_url, "http://127.0.0.1/server/info", timeout=1
         ),
     }
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(checks)) as ex:
         futures = {ex.submit(fn): name for name, fn in checks.items()}
-        for fut in concurrent.futures.as_completed(futures, timeout=10):
+        for fut in concurrent.futures.as_completed(futures, timeout=5):
             results[futures[fut]] = fut.result()
     _quick_cache["data"] = results
     _quick_cache["expires"] = datetime.now(timezone.utc).timestamp() + _quick_cache["ttl"]
@@ -571,6 +572,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    # Pre-warm the status cache in a background thread so the first HTTP
+    # request doesn't pay the full probe cost.
+    import threading
+    def _warm():
+        try:
+            collect_status()
+        except Exception:
+            pass
+    threading.Thread(target=_warm, daemon=True).start()
     server = ThreadingHTTPServer((BIND, PORT), Handler)
     print(f"nrvous status page at http://{BIND}:{PORT}/nrvous-status/")
     server.serve_forever()
