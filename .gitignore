@@ -22,6 +22,10 @@ certs/
 *.crt
 *.pem
 
+# Reference snapshots and firmware dumps that should not be published
+reference/
+.filter-expressions.txt
+
 # IDE / editor
 .vscode/
 .idea/

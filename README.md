@@ -28,10 +28,9 @@ Think of it as a compatibility spoke: the printer still talks to Creality Cloud 
 - `scripts/run_contract_check.sh` — wrapper for the full check
 - `scripts/reset_creality_print_cache.sh` — clears cached Creality Print app state when the UI stays stale
 - `install.sh` — unified installer with backup, restore, uninstall, and sync
-- `snapshots/20260729_181350/` — reference snapshot of the stock app bundle assets used during reverse engineering
 - `docs/PROJECT_SUMMARY.md` — quick mental model and handoff summary
-- `docs/SESSION_HANDOFF.md` — practical operational notes for the next session
 - `docs/INSTALL_AND_RESTORE.md` — detailed install/restore walkthrough
+- `docs/ARCHITECTURE.md` — how the pieces fit together
 
 ## Configuration defaults
 
@@ -243,9 +242,12 @@ For HTTPS versions, replace `http://${PRINTER_HOST}` with `https://${PUBLIC_HOST
 
 ## Helpful reference files
 
-- The stock app bundle under `/Applications/Creality Print.app/Contents/Resources/web` was used to reverse engineer the contract the app expects.
-- The snapshot directory `snapshots/20260729_181350/` contains the bundled assets that were used as a reference for the payload and route shapes.
+- The stock Creality Print macOS app bundle under `/Applications/Creality Print.app/Contents/Resources/web` can be inspected to understand the contract the app expects. This project treats the app bundle as a reference only; it is never modified.
 - Set `LAN_BRIDGE_DEBUG=1` in `/etc/init.d/lan_bridge` to trace payloads from the LAN bridge.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for how to report vulnerabilities and the assumptions this project makes about printer access.
 
 ## Pitfalls
 

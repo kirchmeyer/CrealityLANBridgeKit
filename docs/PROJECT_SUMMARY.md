@@ -32,9 +32,8 @@ The working path is:
 - Unified installer: `install.sh` (install/restore/uninstall/sync/status)
 - Idempotent file sync: `scripts/check_local_remote_sync.py`
 - Contract checks: `scripts/endpoint_contract_check.py` and `scripts/run_contract_check.sh`
-- Local app bundle source tree: `/Applications/Creality Print.app/Contents/Resources/web`
+- Local app bundle source tree: `/Applications/Creality Print.app/Contents/Resources/web` (reference only, never modified)
 - Local app state cache: `~/Library/Application Support/Creality/Creality Print/7.0/`
-- Snapshot reference: `snapshots/20260729_181350/`
 
 ## Why this approach worked quickly
 

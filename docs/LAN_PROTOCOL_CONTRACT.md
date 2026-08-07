@@ -1,6 +1,6 @@
 # Captured LAN Protocol Contract
 
-Source: live capture from Creality Print macOS app → instrumented `creality_probe_backend.py` on `192.168.1.100`, saved at `snapshots/20260804_153740/creality_probe_backend_debug.log`.
+Source: live capture from the stock Creality Print macOS app proxied through a compatibility backend running on a Creality K2 Plus.
 
 This is the **minimal set of endpoints and messages** the stock desktop app actually uses when the printer is added by IP on the LAN. Everything else in the old backend appears to be unused or dead code.
 
@@ -169,7 +169,7 @@ The backend currently sends the unwrapped `result` object from the detail payloa
 }
 ```
 
-See the captured detail payload in `snapshots/20260804_153740/creality_probe_backend_debug.log` or request `http://127.0.0.1:9001/cxy/v1/status` when the backend is running.
+Request `http://127.0.0.1:9001/cxy/v1/status` from the backend when it is running to inspect the live detail payload shape.
 
 Open questions for the minimal backend:
 - Does the app need actual `reqGcodeList` / `reqHistory` / `reqElapseVideoList` data inside the WS response, or is the periodic status object sufficient?

@@ -14,7 +14,6 @@ Printer target: `root@192.168.1.100` (Creality K2 Plus, OpenWrt, nginx 1.19.6, P
   - `GET /protocal.csp`
   - WebSocket `{"method":"get", "params":{...}}`
 - [x] Documented contract in `docs/LAN_PROTOCOL_CONTRACT.md`.
-- [x] Saved debug evidence to `snapshots/20260804_153740/creality_probe_backend_debug.log`.
 
 ---
 

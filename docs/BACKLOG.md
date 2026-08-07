@@ -7,7 +7,7 @@ pick the one that solves the current pain point.
 ## Infrastructure simplification
 
 1. **Remove duplicate init files** ✅
-   - Removed `printer/etc_init.d_lan_bridge`, `printer/etc_init.d_nrvous_status_page`, `printer/etc_init.d_nrvous_watchdog`.
+   - Removed legacy duplicate init files.
    - Canonical `.init.sh` versions remain in `printer/` and are deployed by the install/sync scripts.
    - Rationale resolved: drift between duplicate init files is no longer possible.
 
@@ -23,10 +23,9 @@ pick the one that solves the current pain point.
    - Canonical copy remains in `printer/creality_mdns_announcer.py`.
    - `printer/deploy_mdns_announcer.sh` already copies from the canonical path.
 
-4. **Archive or remove app-patching utilities** ✅
-   - Moved `scripts/export_working_patch.sh`, `scripts/restore_working_patch.sh`, and `scripts/status_check.sh` to `archive/scripts/`.
-   - Added `archive/README.md` explaining why they are archived.
-   - Project policy remains printer-side changes only.
+4. **Remove app-patching utilities** ✅
+   - Removed scripts that patched the macOS Creality Print app bundle.
+   - Project policy remains printer-side changes only; the desktop app is treated as a reference source.
 
 5. **Add bounded respawn to moonraker/klipper inits**
    - Currently `moonraker` and `klipper` init scripts do not respawn.
@@ -71,9 +70,8 @@ pick the one that solves the current pain point.
     - The file can grow unbounded. Add `logrotate` config or size-based rotation inside the service.
 
 15. **Structured logging (JSON)** ✅
-    - Converted lan_bridge.py, nrvous_status_page.py, mjpeg_server.py, cam_delivery_bridge.py, creality_mdns_announcer.py, and webrtc_local_bridge.py to emit ECS 8.11.0 JSON lines.
-    - Converted nrvous_watchdog.sh and restart_cam_stack.sh shell logs to ECS JSON.
-    - nginx access logs were already ECS-formatted via printer/nginx.ecs-log-format.conf.
+   - Converted lan_bridge.py, status_page.py, mjpeg_server.py, cam_delivery_bridge.py, creality_mdns_announcer.py, and webrtc_local_bridge.py to emit ECS 8.11.0 JSON lines.
+   - Converted watchdog.sh and restart_cam_stack.sh shell logs to ECS JSON.
 
 ## Documentation
 
