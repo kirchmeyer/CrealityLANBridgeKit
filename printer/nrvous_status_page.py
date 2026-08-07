@@ -133,6 +133,24 @@ def get_logread_tail(tag, n=20):
         return f"error reading logread {tag}: {exc}"
 
 
+def get_best_tail(preferred_path, fallback_paths=None, logread_tag=None, n=20):
+    """Return the tail of the first readable log file, or logread fallback."""
+    candidates = []
+    if preferred_path:
+        candidates.append(preferred_path)
+    if fallback_paths:
+        candidates.extend(fallback_paths)
+    for path in candidates:
+        text = get_tail_lines(path, n=n)
+        if text and not text.startswith("error reading"):
+            return text
+    if logread_tag:
+        text = get_logread_tail(logread_tag, n=n)
+        if text and not text.startswith("error reading"):
+            return text
+    return "(no log output available)"
+
+
 # Simple TTL cache for status collection so concurrent/tab requests don't
 # stack up slow subprocess calls.
 _status_cache = {"data": None, "expires": 0.0, "ttl": 8.0}
@@ -147,8 +165,18 @@ def _listener_status(label, port):
     return label, is_listening(port)
 
 
-def _log_tail_status(key, tag, n):
-    return key, get_logread_tail(tag, n)
+def _log_tail_status(key, path_or_tuple, n):
+    logread_tag = None
+    if isinstance(path_or_tuple, tuple):
+        preferred, fallbacks = path_or_tuple[0], list(path_or_tuple[1:])
+        # Optional trailing logread tag: last element can be a non-path string
+        # starting with "logread:".
+        if fallbacks and fallbacks[-1].startswith("logread:"):
+            logread_tag = fallbacks.pop().split(":", 1)[1]
+        return key, get_best_tail(preferred, fallbacks, logread_tag=logread_tag, n=n)
+    if isinstance(path_or_tuple, str) and path_or_tuple.startswith("logread:"):
+        return key, get_logread_tail(path_or_tuple.split(":", 1)[1], n=n)
+    return key, get_best_tail(path_or_tuple, logread_tag=None, n=n)
 
 
 def collect_status():
@@ -163,13 +191,12 @@ def collect_status():
         ("nginx", "nginx", "nginx"),
         ("lan_bridge", "python3 /usr/local/bin/lan_bridge.py", "lan_bridge"),
         ("app_cloud_only", "/usr/bin/app-server", "app_cloud_only"),
-        ("stock app (disabled)", "/usr/bin/web-server", "app"),
+        ("stock app (orphan)", "/usr/bin/web-server", "app"),
         ("go2rtc", "go2rtc", "go2rtc"),
         ("cam_app", "/usr/bin/cam_app", "go2rtc"),
         ("cam_delivery_bridge", "python3 /usr/local/bin/cam_delivery_bridge.py", "go2rtc"),
-        ("cloud_webrtc_bridge", "python3 /usr/local/bin/cloud_webrtc_bridge.py", "go2rtc"),
         ("webrtc_local_bridge", "python3 /usr/local/bin/webrtc_local_bridge.py", "webrtc_local_bridge"),
-        ("webrtc (cloud)", "/usr/bin/webrtc", "webrtc"),
+        ("webrtc cloud (orphan)", "/usr/bin/webrtc", "webrtc"),
         ("mjpeg_server", "python3 /usr/local/bin/mjpeg_server.py", "mjpeg_server"),
         ("moonraker", "moonraker.py", "moonraker"),
         ("klipper", "klippy.py", "klipper"),
@@ -188,11 +215,13 @@ def collect_status():
         ("8000 (webrtc_local_bridge)", 8000),
     ]
     log_specs = [
-        ("lan_bridge_tail", "lan_bridge"),
-        ("mjpeg_server_tail", "mjpeg_server"),
-        ("go2rtc_tail", "go2rtc"),
-        ("webrtc_tail", "webrtc"),
-        ("monitor_tail", "Monitor"),
+        # procd captures lan_bridge stdout/stderr to logread; keep a file
+        # fallback in case that ever changes.
+        ("lan_bridge_tail", ("/var/log/lan_bridge.log", "logread:lan_bridge")),
+        ("mjpeg_server_tail", "/tmp/mjpeg_server_solo.log"),
+        ("go2rtc_tail", "/tmp/go2rtc_solo.log"),
+        ("webrtc_tail", ("/mnt/UDISK/creality/userdata/log/webrtc.log", "/tmp/webrtc_solo.log")),
+        ("monitor_tail", "/mnt/UDISK/creality/userdata/log/Monitor.log"),
     ]
 
     # Run service, listener, and log probes in parallel; the slowest bucket
@@ -249,6 +278,7 @@ th {{ color:#8b949e; font-weight:normal; border-bottom:1px solid #30363d; }}
 .warn {{ background:#9e6a03; color:#fff; }}
 pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:.75rem; overflow:auto; font-size:.8rem; max-height:12rem; white-space:pre-wrap; word-break:break-word; }}
 .footer {{ margin-top:2rem; color:#8b949e; font-size:.8rem; }}
+.note {{ margin-top:1rem; color:#8b949e; font-size:.85rem; background:#161b22; border:1px solid #30363d; border-radius:6px; padding:.75rem; }}
 </style>
 </head>
 <body>
@@ -304,6 +334,7 @@ pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:
     <pre>{monitor_tail}</pre>
   </div>
 </div>
+<p class="note"><strong>Note:</strong> "orphan" services are running processes left over from the stock init but no longer started at boot. The camera stack uses a single <code>cam_app</code> source; the separate <code>cloud_webrtc_bridge.py</code> feeder has been retired.</p>
 <p class="footer">Served by nrvous_status_page.py on {bind}:{port}</p>
 </body>
 </html>"""
