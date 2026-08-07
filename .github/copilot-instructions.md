@@ -25,18 +25,19 @@ Operational guidance:
 
 Printer-specific context:
 - Target printer host: root@192.168.1.100
-- Compatibility backend bind: 127.0.0.1:9001
+- LAN bridge backend bind: 127.0.0.1:9002 (WebSocket fronted by nginx on 9999)
 - Moonraker upstream: http://127.0.0.1:7126
 - Public host used by the app-facing flow: 3d.nrvous.io
-- Useful logs: /var/log/nginx/access.log, /var/log/nginx/upload-access.log, /tmp/creality_probe_backend_debug.log
+- Useful logs: /var/log/nginx/access.log, /var/log/nginx/upload-access.log, logread, /tmp/cam_app_solo.log, /tmp/cam_delivery_bridge.log, /tmp/mjpeg_server_solo.log, /tmp/go2rtc_solo.log
 - Useful local references: /Applications/Creality Print.app/Contents/Resources/web and ~/Library/Application Support/Creality/Creality Print/7.0/
 
 Debugging shortcuts that save time:
-- Reapply the printer stack with ./printer/deploy_probe_backend.sh.
+- Reapply the printer stack with ./printer/deploy_lan_bridge.sh root@192.168.1.100.
+- Restart just the camera stack with /etc/init.d/go2rtc restart on the printer.
 - Run ./scripts/run_contract_check.sh 192.168.1.100 80 for the main front door checks.
 - Use python3 scripts/endpoint_contract_check.py --host 192.168.1.100 --port 80 --skip-upload for fast iteration.
 - If the app still shows stale state, clear the cache with ./scripts/reset_creality_print_cache.sh --yes --no-launch.
-- If a route seems wrong, inspect both nginx and the compatibility backend output before changing more code.
+- If a route seems wrong, inspect both nginx and the LAN bridge output before changing more code.
 
 Pitfalls to remember:
 - The app is very sensitive to payload shape and route behavior; a contract mismatch can look like a UI bug.

@@ -1,6 +1,11 @@
 #!/bin/sh /etc/rc.common
 # OpenWrt procd init for the RTSP-to-MJPEG camera server.
-# Runs after go2rtc (START=98) so the RTSP source is available.
+#
+# NOTE: The camera stack is normally started by /etc/init.d/go2rtc, which
+# already launches mjpeg_server as part of restart_cam_stack.sh. This init
+# script is kept as a manual fallback. It refuses to start a second instance
+# if one is already running, so enabling it by accident will not create
+# duplicate processes.
 
 START=99
 STOP=10
@@ -11,6 +16,10 @@ PROG=/usr/local/bin/mjpeg_server.py
 LOG=/var/log/mjpeg_server.log
 
 start_service() {
+    if pgrep -f "/usr/local/bin/mjpeg_server.py" >/dev/null 2>&1; then
+        logger -t mjpeg_server "already running (managed by go2rtc), skipping start"
+        return 0
+    fi
     procd_open_instance mjpeg_server
     procd_set_param env HOME=/root \
         MJPEG_BIND="${MJPEG_BIND:-127.0.0.1}" \
@@ -28,5 +37,7 @@ start_service() {
 }
 
 stop_service() {
-    ps | awk '/python3 \/usr\/local\/bin\/mjpeg_server.py/{print $1}' | xargs -r kill -9 2>/dev/null || true
+    for pid in $(pgrep -f "/usr/local/bin/mjpeg_server.py" 2>/dev/null || true); do
+        kill -9 "$pid" 2>/dev/null || true
+    done
 }

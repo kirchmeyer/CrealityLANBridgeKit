@@ -593,6 +593,30 @@ def _boxs_info_payload():
     box_color_info = []
     slot_lookup = {}  # composite id (e.g. "T1A") -> slot data
 
+    def _normalize_color(color_raw):
+        """Map a native Creality color string to a CSS hex color."""
+        color_raw = str(color_raw or "")
+        if color_raw.startswith("0") and len(color_raw) == 7:
+            return "#" + color_raw[1:]
+        if color_raw.startswith("#0") and len(color_raw) == 8:
+            return "#" + color_raw[2:]
+        if not color_raw.startswith("#"):
+            body = color_raw.lstrip("0")
+            return "#" + (body or DEFAULT_MATERIAL_COLOR.lstrip("#"))
+        return color_raw
+
+    def _parse_humidity(box):
+        """Return integer humidity for a CFS box, or None if unavailable."""
+        if not isinstance(box, dict):
+            return None
+        raw = box.get("dry_and_humidity")
+        if raw in (None, ""):
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
     def _make_slot_entry(slot, box_id, box_name, slot_index):
         """Create a slot entry and its boxColorInfo entry."""
         slot_letter = str(slot.get("materialId") or "")
@@ -605,15 +629,7 @@ def _boxs_info_payload():
                 letter_id = slot_index
         composite = f"{box_name}{slot_letter}"
 
-        color_raw = str(slot.get("color") or "")
-        if color_raw.startswith("0") and len(color_raw) == 7:
-            color = "#" + color_raw[1:]
-        elif color_raw.startswith("#0") and len(color_raw) == 8:
-            color = "#" + color_raw[2:]
-        elif not color_raw.startswith("#"):
-            color = "#" + color_raw.lstrip("0") or DEFAULT_MATERIAL_COLOR
-        else:
-            color = color_raw
+        color = _normalize_color(slot.get("color"))
 
         try:
             remain = int(str(slot.get("remainLen") or "0"))
@@ -625,10 +641,17 @@ def _boxs_info_payload():
             total = remain or 1
         percent = int(round(remain / total * 100)) if total else 100
 
-        state = int(slot.get("rfid", 0)) or int(slot.get("state", 0)) or 2
+        native_rfid = int(slot.get("rfid", 0))
+        native_state = int(slot.get("state", 0))
         material_type = str(slot.get("materialType") or slot.get("type") or DEFAULT_MATERIAL_NAME)
         filament_name = str(slot.get("name") or material_type)
         brand = str(slot.get("brand") or "Creality")
+
+        # The LAN UI draws the percent-based fill only when state === 2.
+        # Use the native rfid/state when they indicate an active slot, otherwise
+        # infer "loaded" from the presence of real filament data.
+        has_filament = bool(color) and material_type and material_type != DEFAULT_MATERIAL_NAME and total > 0
+        state = 2 if (native_rfid == 2 or native_state == 2 or has_filament) else native_state or 0
 
         entry = {
             "id": letter_id,
@@ -642,7 +665,7 @@ def _boxs_info_payload():
             "type": material_type,
             "filamentType": material_type,
             "state": state,
-            "RFIDState": state,
+            "RFIDState": native_rfid if native_rfid else state,
             "percent": percent,
             "remaining_length": remain,
             "vendor": brand,
@@ -659,7 +682,7 @@ def _boxs_info_payload():
             "materialId": letter_id,
             "filamentType": material_type,
             "filamentName": filament_name,
-            "RFIDState": state,
+            "RFIDState": entry["RFIDState"],
             "percent": percent,
             "remaining_length": remain,
             "type": material_type,
@@ -673,6 +696,7 @@ def _boxs_info_payload():
     if CFS_FLATTEN:
         flat_slot_index = 0
         flat_materials = []
+        box_humidity = _parse_humidity(non_empty_boxes[0])
         for box in non_empty_boxes:
             box_name = str(box.get("boxID") or "CFS")
             for slot_index, slot in enumerate(box.get("list", [])):
@@ -692,7 +716,7 @@ def _boxs_info_payload():
             "name": DEFAULT_CFS_NAME,
             "type": 0,
             "state": 0,
-            "humidity": 0,
+            "humidity": box_humidity,
             "materials": flat_materials,
         })
     else:
@@ -710,9 +734,68 @@ def _boxs_info_payload():
                 "name": box_name,
                 "type": 0,
                 "state": 0,
-                "humidity": 0,
+                "humidity": _parse_humidity(box),
                 "materials": materials,
             })
+
+    # Add the spool holder / rack material as a type:1 materialBox so the UI
+    # renders the Spool Holder panel in the LAN filament view.
+    rack = data.get("rackMaterial") if isinstance(data, dict) else {}
+    if isinstance(rack, dict):
+        rack_color_raw = rack.get("color")
+        rack_color = _normalize_color(rack_color_raw) if rack_color_raw else ""
+        rack_type = str(rack.get("materialType") or "")
+        rack_name = str(rack.get("name") or rack_type or "")
+        rack_brand = str(rack.get("brand") or "")
+        rack_state = int(rack.get("rfid", 0)) or 2
+        rack_id = 0
+        rack_entry = {
+            "id": rack_id,
+            "cId": "RACK",
+            "boxId": rack_id,
+            "boxType": 1,
+            "materialId": rack_id,
+            "name": rack_name,
+            "filamentName": rack_name,
+            "color": rack_color,
+            "type": rack_type,
+            "filamentType": rack_type,
+            "state": rack_state,
+            "RFIDState": rack_state,
+            "percent": 100,
+            "remaining_length": 0,
+            "vendor": rack_brand,
+            "brand": rack_brand,
+            "minTemp": rack.get("minTemp", 190),
+            "maxTemp": rack.get("maxTemp", 230),
+            "diameter": rack.get("diameter", "1.75"),
+            "selected": 1 if rack.get("selected") else 0,
+        }
+        rack_box_color = {
+            "boxType": 1,
+            "color": rack_color,
+            "boxId": rack_id,
+            "materialId": rack_id,
+            "filamentType": rack_type,
+            "filamentName": rack_name,
+            "RFIDState": rack_state,
+            "percent": 100,
+            "remaining_length": 0,
+            "type": rack_type,
+            "id": rack_id,
+            "name": rack_name,
+            "cId": "RACK",
+            "selected": rack_entry["selected"],
+        }
+        material_boxes.append({
+            "id": rack_id,
+            "name": "Spool Holder",
+            "type": 1,
+            "state": 0,
+            "humidity": None,
+            "materials": [rack_entry],
+        })
+        box_color_info.append(rack_box_color)
 
     # Build same_material / color_same_material groupings from native data.
     # The LAN UI (deviceType==0) expects:
@@ -857,10 +940,16 @@ def _build_protocal_payload():
     temp_info = _read_temperature_info()
     work_info = _read_current_work_info()
 
-    nozzle_temp = float(pipe_data.get("hot_end_temp") or extruder.get("temperature") or 0.0)
-    bed_temp = float(pipe_data.get("hot_bed_temp") or heater_bed.get("temperature") or 0.0)
-    nozzle_target = float(temp_info.get("extruder") or extruder.get("target") or 0.0)
-    bed_target = float(temp_info.get("bed") or heater_bed.get("target") or 0.0)
+    # Always use live Moonraker temps. The Creality temperature_info.json file
+    # retains the last *target* values set by the stock UI, so using it as a
+    # fallback for targets makes the app show stale target temps as current temps.
+    chamber = status.get("chamber", {}) or {}
+    nozzle_temp = float(extruder.get("temperature") or 0.0)
+    bed_temp = float(heater_bed.get("temperature") or 0.0)
+    chamber_temp = float(chamber.get("temperature") or 0.0)
+    nozzle_target = float(extruder.get("target") or 0.0)
+    bed_target = float(heater_bed.get("target") or 0.0)
+    chamber_target = float(chamber.get("target") or 0.0)
 
     progress = float(display_status.get("progress") or 0.0)
     progress_pct = int(progress * 100)
@@ -902,7 +991,11 @@ def _build_protocal_payload():
         "video": 1,
         "features": ["videoInfo.video"],
         "linuxVideoUrl": f"http://{address}:80/camera.mjpeg",
-        "webrtcSupport": False,
+        "webrtcSupport": True,
+        "videoToken": "lan-compat-video-token",
+        "cameraState": {"enabled": True, "state": "ready"},
+        "recordState": {"enabled": True, "state": "ready", "video": True, "camera": True},
+        "streamState": {"enabled": True, "state": "ready"},
         "version": "1.0.0",
         "isLanPrinter": True,
         "lanCompatible": True,
@@ -915,8 +1008,10 @@ def _build_protocal_payload():
         "cloudOnline": False,
         "nozzleTemp": nozzle_temp,
         "bedTemp": bed_temp,
+        "chamberTemp": chamber_temp,
         "nozzleTemp2": nozzle_target,
         "bedTemp2": bed_target,
+        "chamberTempTarget": chamber_target,
         "printProgress": progress_pct,
         "printLeftTime": print_left_time,
         "printJobTime": int(print_duration),
@@ -931,6 +1026,8 @@ def _build_protocal_payload():
         "layer": "",
         "TotalLayer": "",
         "modelVersion": "1.0.0",
+        "IsMultiColorDevice": True,
+        "cfsInsert": 1,
     }
 
 
@@ -952,6 +1049,10 @@ def _build_detail_payload():
         "bed": {"value": status.get("heater_bed", {}).get("temperature", 0.0), "target": status.get("heater_bed", {}).get("target", 0.0), "max": 120.0},
         "chamber": {"value": status.get("chamber", {}).get("temperature", 0.0), "target": status.get("chamber", {}).get("target", 0.0), "max": 80.0},
     }
+    # Ensure the protocal-level payload also carries chamber fields; some app
+    # builds look for them at the top level rather than inside temperature{}.
+    protocal.setdefault("chamberTemp", temperature["chamber"]["value"])
+    protocal.setdefault("chamberTempTarget", temperature["chamber"]["target"])
 
     device = {
         "online": 1,
@@ -974,7 +1075,11 @@ def _build_detail_payload():
         "printerImagePath": "",
         "features": protocal["features"],
         "linuxVideoUrl": protocal["linuxVideoUrl"],
-        "webrtcSupport": False,
+        "webrtcSupport": True,
+        "videoToken": protocal.get("videoToken") or "lan-compat-video-token",
+        "cameraState": protocal.get("cameraState") or {"enabled": True, "state": "ready"},
+        "recordState": protocal.get("recordState") or {"enabled": True, "state": "ready", "video": True, "camera": True},
+        "streamState": protocal.get("streamState") or {"enabled": True, "state": "ready"},
         "connectType": 1001,
         "isLanPrinter": True,
         "lanCompatible": True,
@@ -996,9 +1101,17 @@ def _build_detail_payload():
         "printJobTime": protocal["printJobTime"],
         "printStartTime": protocal["printStartTime"],
         "nozzleTemp": temperature["nozzle"]["value"],
+        "targetNozzleTemp": temperature["nozzle"]["target"],
         "nozzleTemp2": temperature["nozzle"]["target"],
         "bedTemp": temperature["bed"]["value"],
+        "bedTemp0": temperature["bed"]["value"],
         "bedTemp2": temperature["bed"]["target"],
+        "targetBedTemp0": temperature["bed"]["target"],
+        "boxTemp": temperature["chamber"]["value"],
+        "targetBoxTemp": temperature["chamber"]["target"],
+        "maxNozzleTemp": temperature["nozzle"]["max"],
+        "maxBedTemp": temperature["bed"]["max"],
+        "maxBoxTemp": temperature["chamber"]["max"],
         "fan": status.get("fans", {}).get("fan0", 0),
         "modelFanPct": status.get("fans", {}).get("fan0", 0),
         "fanAuxiliary": status.get("fans", {}).get("fan1", 0),
@@ -1033,11 +1146,19 @@ def _build_detail_payload():
         "data": {
             "bedTemp0": temperature["bed"]["value"],
             "nozzleTemp": temperature["nozzle"]["value"],
+            "boxTemp": temperature["chamber"]["value"],
             "targetBedTemp0": temperature["bed"]["target"],
             "targetNozzleTemp": temperature["nozzle"]["target"],
+            "targetBoxTemp": temperature["chamber"]["target"],
+            "maxBedTemp": temperature["bed"]["max"],
+            "maxNozzleTemp": temperature["nozzle"]["max"],
+            "maxBoxTemp": temperature["chamber"]["max"],
         },
         "deviceUI": "",
         "hostType": "",
+        "machine_ptc_exist": 1,
+        "IsMultiColorDevice": True,
+        "cfsInsert": 1,
         "moonrakerPort": int(MOONRAKER_URL.rsplit(":", 1)[-1]),
         "fluiddPort": 80,
         "mainsailPort": 80,

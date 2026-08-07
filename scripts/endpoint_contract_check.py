@@ -75,13 +75,20 @@ def check_non_upload_routes(base: str, timeout: float) -> None:
     status, payload = fetch_json(base + "/protocal.csp?fname=Info&opt=main&function=get", timeout=timeout)
     if status != 200 or not isinstance(payload, dict):
         fail("/protocal.csp invalid response")
-    for key in ["model", "modelName", "ssid", "mac", "address", "features", "video", "linuxVideoUrl", "state", "deviceState"]:
+    for key in ["model", "modelName", "ssid", "mac", "address", "features", "video", "linuxVideoUrl", "state", "deviceState", "webrtcSupport", "deviceType"]:
         if key not in payload:
             fail(f"/protocal.csp missing {key}")
     if not payload.get("video"):
         fail("/protocal.csp did not advertise video capability")
-    if not isinstance(payload.get("features"), list) or not any("videoEncryption" in str(item) for item in payload.get("features", [])):
-        fail("/protocal.csp missing videoEncryption feature flag")
+    features = payload.get("features", [])
+    if not isinstance(features, list) or not any("videoInfo.video" in str(item) for item in features):
+        fail("/protocal.csp missing videoInfo.video feature flag")
+    if any("videoInfo.videoEncryption" in str(item) for item in features):
+        fail("/protocal.csp should not advertise videoInfo.videoEncryption; the macOS app must use http://{printer}:8000/call/webrtc_local")
+    if not payload.get("webrtcSupport"):
+        fail("/protocal.csp did not advertise webrtcSupport")
+    if payload.get("deviceType") != 0:
+        fail("/protocal.csp deviceType must be 0 for the LAN camera path")
     print("OK: /protocal.csp legacy compatibility")
 
 

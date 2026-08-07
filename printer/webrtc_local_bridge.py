@@ -90,6 +90,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         try:
+            offer = self._normalize_offer(offer)
+            # Save last normalized offer for diagnostics.
+            try:
+                with open("/tmp/webrtc_last_offer.sdp", "wb") as fh:
+                    fh.write(offer)
+            except Exception:
+                pass
             answer = self._forward_to_go2rtc(offer)
         except Exception as exc:
             debug(f"forward error: {exc}")
@@ -100,6 +107,60 @@ class BridgeHandler(BaseHTTPRequestHandler):
         b64_payload = base64.b64encode(payload).decode("ascii")
         debug(f"answer sdp length={len(answer.get('sdp', ''))}")
         self._send_text(b64_payload)
+
+    def _normalize_offer(self, offer_bytes):
+        """Return raw SDP bytes, decoding wrappers and keeping only H264."""
+        # The macOS Creality Print native host wraps the SDP in a JSON object
+        # and then base64-encodes the whole thing before POSTing.
+        text = offer_bytes.decode("utf-8", errors="replace").strip()
+        debug(f"offer first bytes: {text[:80]!r}")
+        sdp_text = text
+        if not sdp_text.startswith("v="):
+            # Try base64 decoding (allow whitespace/newlines).
+            try:
+                cleaned = "".join(text.split())
+                decoded = base64.b64decode(cleaned, validate=True)
+                decoded_text = decoded.decode("utf-8", errors="replace")
+                debug(f"base64 decoded first bytes: {decoded_text[:80]!r}")
+                sdp_text = decoded_text
+            except Exception:
+                pass
+        if not sdp_text.startswith("v="):
+            # Some hosts send JSON {"sdp":"..."}; extract the sdp field.
+            try:
+                obj = json.loads(sdp_text)
+                if isinstance(obj, dict) and "sdp" in obj:
+                    extracted = obj["sdp"]
+                    if isinstance(extracted, str):
+                        debug(f"extracted SDP first bytes: {extracted[:80]!r}")
+                        sdp_text = extracted
+            except Exception as exc:
+                debug(f"json parse failed: {exc}")
+        # go2rtc rejects offers with multiple payload types/codecs. Keep H264
+        # payload type 96 only (the app already filters fmtp but leaves the
+        # payload type list intact, which confuses go2rtc).
+        return self._h264_only_sdp(sdp_text).encode("utf-8")
+
+    @staticmethod
+    def _h264_only_sdp(sdp_text):
+        lines = sdp_text.splitlines()
+        out = []
+        for line in lines:
+            if line.startswith("m=video"):
+                out.append("m=video 9 UDP/TLS/RTP/SAVPF 96")
+            elif line.startswith("a=rtpmap:") and not line.startswith("a=rtpmap:96 "):
+                continue
+            elif line.startswith("a=rtcp-fb:") and not line.startswith("a=rtcp-fb:96 "):
+                continue
+            elif line.startswith("a=fmtp:") and not line.startswith("a=fmtp:96 "):
+                continue
+            elif line.startswith("a=ssrc-group:"):
+                continue
+            elif line.startswith("a=ssrc:"):
+                continue
+            else:
+                out.append(line)
+        return "\r\n".join(out) + "\r\n"
 
     def _forward_to_go2rtc(self, offer_bytes):
         headers = {"Content-Type": "plain/text"}

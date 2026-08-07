@@ -4,15 +4,20 @@ This repository is a printer-side compatibility layer for the stock Creality Pri
 
 ## What this project does
 
-- Runs a small compatibility backend on the printer at 127.0.0.1:9001.
-- Routes app-facing endpoints such as /info, /protocal.csp, /machine/system_info, /machine/multi_machine, /api/rest/print/cluster/devices/*, /api/v1/streams, and related camera/record routes through nginx to that backend.
+- Runs a small LAN compatibility backend on the printer at 127.0.0.1:9002.
+- Routes app-facing endpoints such as `/info`, `/protocal.csp`, `/machine/system_info`, `/machine/multi_machine`, `/api/rest/print/cluster/devices/*`, `/api/v1/streams`, and related camera/record routes through nginx to that backend.
+- Provides a single-source camera stack that feeds both Creality Cloud and the LAN app from one `cam_app` instance.
 - Preserves printer-side behavior for LAN-added devices without modifying the Creality Print app bundle.
 
 ## Repository layout
 
-- printer/creality_probe_backend.py — main compatibility backend
-- printer/deploy_probe_backend.sh — deploys the backend and reloads nginx on the printer
-- printer/nginx.compat.example.conf — nginx route template for the printer
+- printer/lan_bridge.py — main LAN compatibility backend
+- printer/deploy_lan_bridge.sh — deploys the LAN bridge, camera stack, and nginx config on the printer
+- printer/lan_bridge.init.sh — OpenWrt procd init for the LAN bridge
+- printer/restart_cam_stack.sh — orchestrates cam_app → delivery bridge → mjpeg_server → go2rtc
+- printer/go2rtc_init.sh — OpenWrt procd init that runs the camera stack wrapper
+- printer/creality.lan.locations.conf — nginx location blocks for the LAN-facing routes
+- printer/creality.lan.websocket.conf — nginx WebSocket server on port 9999
 - scripts/endpoint_contract_check.py — fast contract validation against the printer front door
 - scripts/run_contract_check.sh — wrapper for the full check
 - scripts/reset_creality_print_cache.sh — clears cached Creality Print app state when the UI stays stale
@@ -25,17 +30,17 @@ This repository is a printer-side compatibility layer for the stock Creality Pri
 These are the values that were used for the live testing flow:
 
 - Printer host: root@192.168.1.100
-- Compatibility backend: http://127.0.0.1:9001
+- LAN bridge backend: http://127.0.0.1:9002 (WebSocket fronted by nginx on 9999)
 - Moonraker upstream: http://127.0.0.1:7126
 - Public host used by the app flow: 3d.nrvous.io
-- Debug log: /tmp/creality_probe_backend_debug.log
+- Camera debug logs: `/tmp/cam_app_solo.log`, `/tmp/cam_delivery_bridge.log`, `/tmp/mjpeg_server_solo.log`, `/tmp/go2rtc_solo.log`
 
 ## Quick start
 
-1. Deploy the compatibility backend to the printer
+1. Deploy the LAN bridge and camera stack to the printer
 
 ```bash
-./printer/deploy_probe_backend.sh
+./printer/deploy_lan_bridge.sh root@192.168.1.100
 ```
 
 2. Validate the printer-facing contract
@@ -63,7 +68,8 @@ Or run the broader wrapper:
 ```bash
 ssh -o BatchMode=yes -o StrictHostKeyChecking=no root@192.168.1.100 'tail -n 120 /var/log/nginx/access.log'
 ssh -o BatchMode=yes -o StrictHostKeyChecking=no root@192.168.1.100 'tail -n 120 /var/log/nginx/upload-access.log'
-ssh -o BatchMode=yes -o StrictHostKeyChecking=no root@192.168.1.100 'tail -n 240 /tmp/creality_probe_backend_debug.log || true'
+ssh -o BatchMode=yes -o StrictHostKeyChecking=no root@192.168.1.100 'logread | tail -n 80'
+ssh -o BatchMode=yes -o StrictHostKeyChecking=no root@192.168.1.100 'tail -n 40 /tmp/cam_app_solo.log /tmp/cam_delivery_bridge.log /tmp/mjpeg_server_solo.log /tmp/go2rtc_solo.log 2>/dev/null'
 ```
 
 ### On the Mac app side
@@ -84,7 +90,7 @@ The app’s saved state for this project was inspected under:
 
 - The stock app bundle under /Applications/Creality Print.app/Contents/Resources/web was used to reverse engineer the contract the app expects.
 - The snapshot directory snapshots/20260729_181350/ contains the bundled assets that were used as a reference for the payload and route shapes.
-- The backend itself writes structured trace lines when LAN_BRIDGE_DEBUG=1 is set, which is helpful for understanding whether the backend is producing the expected info/detail/media payloads.
+- Set `LAN_BRIDGE_DEBUG=1` in `/etc/init.d/lan_bridge` to trace payloads from the LAN bridge.
 
 ## Pitfalls
 

@@ -106,13 +106,15 @@ class MJPEGHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         global client_count
-        if self.path not in ("/cam.mjpg", "/cam.jpg"):
+        # Accept exact paths or paths with query strings (e.g. Fluidd's
+        # cacheBust parameter) so callers don't have to strip them first.
+        if not (self.path.startswith("/cam.mjpg") or self.path.startswith("/cam.jpg")):
             self.send_error(404)
             return
 
         # Single-frame request vs stream
         accept = self.headers.get("Accept", "")
-        is_snapshot = self.path == "/cam.jpg" or ("multipart" not in accept and "image" in accept)
+        is_snapshot = self.path.startswith("/cam.jpg") or ("multipart" not in accept and "image" in accept)
         if is_snapshot:
             with frame_lock:
                 frame = latest_frame
@@ -159,7 +161,7 @@ class MJPEGHandler(http.server.BaseHTTPRequestHandler):
                 client_count -= 1
 
     def do_HEAD(self):
-        if self.path != "/cam.mjpg":
+        if not self.path.startswith("/cam.mjpg"):
             self.send_error(404)
             return
         self.send_response(200)

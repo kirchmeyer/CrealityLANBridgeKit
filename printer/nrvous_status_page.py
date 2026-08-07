@@ -1,0 +1,457 @@
+#!/usr/bin/env python3
+"""Printer status page for the nrvous.io Creality LAN bridge stack.
+
+Served at /nrvous-status/ via nginx. The path prefix is deliberately unlikely to
+clash with stock Creality, Fluidd, moonraker, or go2rtc routes.
+
+Reflects the current printer-side stack:
+  - lan_bridge (Creality app compatibility, 127.0.0.1:9002)
+  - mjpeg_server (RTSP -> MJPEG for LAN app / Fluidd, 127.0.0.1:8081)
+  - go2rtc (camera RTSP source, :8554 / :1984)
+  - moonraker (:7125)
+  - klipper + nginx + stock app
+"""
+import concurrent.futures
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+PORT = int(os.environ.get("NRVOUS_STATUS_PORT", "8765"))
+BIND = os.environ.get("NRVOUS_STATUS_BIND", "127.0.0.1")
+
+
+def run(cmd, timeout=2):
+    try:
+        return subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+        ).stdout.strip()
+    except Exception as exc:
+        return f"error: {exc}"
+
+
+def is_listening(port, proto="tcp"):
+    # Pure-python connect probe: avoids the fork overhead of netstat/grep on a
+    # busy embedded system. All ports we probe are TCP services.
+    try:
+        s = socket.create_connection(("127.0.0.1", port), timeout=0.4)
+        s.close()
+        return True
+    except Exception:
+        return False
+
+
+def is_enabled(service):
+    # Fast path: OpenWrt enables services by symlinking /etc/rc.d/S##name.
+    # Falling back to init.d is ~0.5s per call, so avoid it on the hot path.
+    try:
+        import glob
+        return bool(glob.glob(f"/etc/rc.d/S*{service}"))
+    except Exception:
+        rc = subprocess.run(
+            f"/etc/init.d/{service} enabled",
+            shell=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        return rc == 0
+
+
+def is_running(pattern):
+    # pgrep is compiled and ~5-10x faster than scanning /proc from Python on
+    # this embedded host. Fall back to /proc scan if pgrep is missing.
+    try:
+        rc = subprocess.run(
+            ["pgrep", "-f", pattern],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        return rc == 0
+    except Exception:
+        pass
+    try:
+        regex = re.compile(pattern)
+        for entry in os.scandir("/proc"):
+            if not entry.name.isdigit():
+                continue
+            try:
+                cmdline = Path(entry.path, "cmdline").read_text(errors="replace").replace("\x00", " ")
+                if regex.search(cmdline):
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
+
+
+def get_uptime():
+    try:
+        with open("/proc/uptime") as f:
+            secs = float(f.read().split()[0])
+        days, rem = divmod(int(secs), 86400)
+        hours, rem = divmod(rem, 3600)
+        mins, _ = divmod(rem, 60)
+        return f"{days}d {hours}h {mins}m"
+    except Exception:
+        return "unknown"
+
+
+def get_load():
+    try:
+        with open("/proc/loadavg") as f:
+            return f.read().split()[0]
+    except Exception:
+        return "?"
+
+
+def get_tail_lines(path, n=20):
+    try:
+        p = Path(path)
+        if not p.exists():
+            return ""
+        text = p.read_text(errors="replace")
+        lines = text.splitlines()
+        return "\n".join(lines[-n:])
+    except Exception as exc:
+        return f"error reading {path}: {exc}"
+
+
+def get_logread_tail(tag, n=20):
+    try:
+        return run(f"logread -e {tag} 2>/dev/null | tail -{n}")
+    except Exception as exc:
+        return f"error reading logread {tag}: {exc}"
+
+
+# Simple TTL cache for status collection so concurrent/tab requests don't
+# stack up slow subprocess calls.
+_status_cache = {"data": None, "expires": 0.0, "ttl": 8.0}
+_quick_cache = {"data": None, "expires": 0.0, "ttl": 5.0}
+
+
+def _service_status(name, pattern, svc):
+    return name, {"enabled": is_enabled(svc), "running": is_running(pattern)}
+
+
+def _listener_status(label, port):
+    return label, is_listening(port)
+
+
+def _log_tail_status(key, tag, n):
+    return key, get_logread_tail(tag, n)
+
+
+def collect_status():
+    now_ts = datetime.now(timezone.utc).timestamp()
+    if _status_cache["data"] is not None and now_ts < _status_cache["expires"]:
+        return _status_cache["data"]
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    hostname = socket.gethostname()
+
+    service_specs = [
+        ("nginx", "nginx", "nginx"),
+        ("lan_bridge", "python3 /usr/local/bin/lan_bridge.py", "lan_bridge"),
+        ("mjpeg_server", "python3 /usr/local/bin/mjpeg_server.py", "mjpeg_server"),
+        ("go2rtc", "go2rtc", "go2rtc"),
+        ("moonraker", "moonraker.py", "moonraker"),
+        ("klipper", "klippy.py", "klipper"),
+        ("app (stock)", "/usr/bin/web-server", "app"),
+    ]
+    listener_specs = [
+        ("80 (nginx HTTP)", 80),
+        ("443 (nginx HTTPS)", 443),
+        ("7125 (moonraker)", 7125),
+        ("7130 (Fluidd WSS fallback)", 7130),
+        ("8081 (mjpeg_server)", 8081),
+        ("9002 (lan_bridge)", 9002),
+        ("1984 (go2rtc HTTP)", 1984),
+        ("8554 (go2rtc RTSP)", 8554),
+    ]
+    log_specs = [
+        ("lan_bridge_tail", "lan_bridge"),
+        ("mjpeg_server_tail", "mjpeg_server"),
+        ("go2rtc_tail", "go2rtc"),
+    ]
+
+    # Run service, listener, and log probes in parallel; the slowest bucket
+    # dominates instead of the sum.
+    services, listeners, logs = {}, {}, {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+        svc_futs = [ex.submit(_service_status, *spec) for spec in service_specs]
+        lst_futs = [ex.submit(_listener_status, *spec) for spec in listener_specs]
+        log_futs = [ex.submit(_log_tail_status, key, tag, 15) for key, tag in log_specs]
+        for fut in concurrent.futures.as_completed(svc_futs):
+            name, info = fut.result()
+            services[name] = info
+        for fut in concurrent.futures.as_completed(lst_futs):
+            label, ok = fut.result()
+            listeners[label] = ok
+        for fut in concurrent.futures.as_completed(log_futs):
+            key, text = fut.result()
+            logs[key] = text
+
+    status = {
+        "hostname": hostname,
+        "timestamp": now,
+        "uptime": get_uptime(),
+        "load": get_load(),
+        "services": services,
+        "listeners": listeners,
+        "logs": logs,
+    }
+    _status_cache["data"] = status
+    _status_cache["expires"] = datetime.now(timezone.utc).timestamp() + _status_cache["ttl"]
+    return status
+
+
+HTML_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nrvous bridge status</title>
+<style>
+:root {{ color-scheme: dark; }}
+body {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background:#0d1117; color:#c9d1d9; margin:0; padding:2rem; line-height:1.5; }}
+h1 {{ color:#58a6ff; margin-bottom:.25rem; }}
+.sub {{ color:#8b949e; margin-bottom:1.5rem; }}
+.grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:1rem; }}
+.card {{ background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem; }}
+.card h2 {{ margin:0 0 .75rem; font-size:1rem; color:#79c0ff; }}
+table {{ width:100%; border-collapse: collapse; }}
+th, td {{ text-align:left; padding:.35rem .5rem; }}
+th {{ color:#8b949e; font-weight:normal; border-bottom:1px solid #30363d; }}
+.badge {{ display:inline-block; padding:.15rem .5rem; border-radius:999px; font-size:.75rem; font-weight:bold; }}
+.ok {{ background:#238636; color:#fff; }}
+.fail {{ background:#da3633; color:#fff; }}
+.warn {{ background:#9e6a03; color:#fff; }}
+pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:.75rem; overflow:auto; font-size:.8rem; max-height:12rem; white-space:pre-wrap; word-break:break-word; }}
+.footer {{ margin-top:2rem; color:#8b949e; font-size:.8rem; }}
+</style>
+</head>
+<body>
+<h1>🖨️ nrvous bridge status</h1>
+<p class="sub">{hostname} · {timestamp} · uptime {uptime} · load {load}</p>
+<div class="grid">
+  <div class="card">
+    <h2>Services</h2>
+    <table>
+      <tr><th>Name</th><th>Enabled</th><th>Running</th></tr>
+      {services_rows}
+    </table>
+  </div>
+  <div class="card">
+    <h2>Listeners</h2>
+    <table>
+      <tr><th>Port</th><th>State</th></tr>
+      {listeners_rows}
+    </table>
+  </div>
+  <div class="card" style="grid-column: 1 / -1;">
+    <h2>Quick checks</h2>
+    <table>
+      <tr><td>HTTP /camera.mjpeg</td><td>{camera_mjpeg_http}</td></tr>
+      <tr><td>HTTP /webcam/stream.mjpg</td><td>{webcam_stream_http}</td></tr>
+      <tr><td>go2rtc /api/streams</td><td>{streams_http}</td></tr>
+      <tr><td>/info</td><td>{info_http}</td></tr>
+      <tr><td>/protocal.csp</td><td>{protocal_http}</td></tr>
+      <tr><td>/server/info</td><td>{server_info}</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h2>lan_bridge log tail</h2>
+    <pre>{lan_bridge_tail}</pre>
+  </div>
+  <div class="card">
+    <h2>mjpeg_server log tail</h2>
+    <pre>{mjpeg_server_tail}</pre>
+  </div>
+  <div class="card">
+    <h2>go2rtc log tail</h2>
+    <pre>{go2rtc_tail}</pre>
+  </div>
+</div>
+<p class="footer">Served by nrvous_status_page.py on {bind}:{port}</p>
+</body>
+</html>"""
+
+
+def check_url(url, host=None, timeout=2):
+    import ssl
+    import urllib.request
+    try:
+        ctx = ssl._create_unverified_context()
+        req = urllib.request.Request(url, method="GET")
+        if host:
+            req.add_header("Host", host)
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+            ctype = r.headers.get("Content-Type", "unknown")
+            return f'<span class="badge ok">HTTP {r.status} {ctype}</span>'
+    except Exception as exc:
+        return f'<span class="badge fail">{exc}</span>'
+
+
+def _run_quick_checks():
+    """Hit a handful of public endpoints in parallel and return HTML badge strings."""
+    import functools
+    now_ts = datetime.now(timezone.utc).timestamp()
+    if _quick_cache["data"] is not None and now_ts < _quick_cache["expires"]:
+        return _quick_cache["data"]
+
+    checks = {
+        "camera_mjpeg_http": functools.partial(
+            check_url, "http://127.0.0.1/camera.mjpeg", timeout=2
+        ),
+        "webcam_stream_http": functools.partial(
+            check_url, "http://127.0.0.1/webcam/stream.mjpg", timeout=2
+        ),
+        "streams_http": functools.partial(
+            check_url,
+            "http://127.0.0.1:1984/api/streams",
+            timeout=2,
+        ),
+        "info_http": functools.partial(check_url, "http://127.0.0.1/info", timeout=2),
+        "protocal_http": functools.partial(
+            check_url, "http://127.0.0.1/protocal.csp", timeout=2
+        ),
+        "server_info": functools.partial(
+            check_url, "http://127.0.0.1/server/info", timeout=2
+        ),
+    }
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(checks)) as ex:
+        futures = {ex.submit(fn): name for name, fn in checks.items()}
+        for fut in concurrent.futures.as_completed(futures, timeout=10):
+            results[futures[fut]] = fut.result()
+    _quick_cache["data"] = results
+    _quick_cache["expires"] = datetime.now(timezone.utc).timestamp() + _quick_cache["ttl"]
+    return results
+
+
+def check_url_post_webrtc(url, host=None):
+    import urllib.request
+    import base64
+    import json
+    offer = (
+        "v=0\r\n"
+        "o=- 0 0 IN IP4 127.0.0.1\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+        "c=IN IP4 0.0.0.0\r\n"
+        "a=rtcp:9 IN IP4 0.0.0.0\r\n"
+        "a=ice-ufrag:abc123\r\n"
+        "a=ice-pwd:def45678901234567890\r\n"
+        "a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n"
+        "a=setup:actpass\r\n"
+        "a=mid:0\r\n"
+        "a=sendrecv\r\n"
+        "a=rtcp-mux\r\n"
+        "a=rtpmap:96 H264/90000\r\n"
+        "a=fmtp:96 packetization-mode=1;profile-level-id=42e01f;level-asymmetry-allowed=1\r\n"
+    )
+    try:
+        req = urllib.request.Request(url, data=offer.encode(), method="POST", headers={"Content-Type": "plain/text"})
+        if host:
+            req.add_header("Host", host)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            body = r.read().decode()
+            payload = json.loads(base64.b64decode(body))
+            if payload.get("type") == "answer" and len(payload.get("sdp", "")) > 100:
+                return '<span class="badge ok">answer SDP</span>'
+            return '<span class="badge warn">unexpected payload</span>'
+    except Exception as exc:
+        return f'<span class="badge fail">{exc}</span>'
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+
+    def _json(self, obj):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(obj, indent=2).encode())
+
+    def _html(self, body):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(body.encode())
+
+    def do_GET(self):
+        if self.path == "/nrvous-status/api/status.json":
+            self._json(collect_status())
+            return
+        if self.path in ("/nrvous-status/", "/nrvous-status"):
+            # Collect service/listener state and probe public endpoints in
+            # parallel; the slowest path should dominate, not the sum.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+                data_fut = ex.submit(collect_status)
+                quick_fut = ex.submit(_run_quick_checks)
+                data = data_fut.result()
+                quick_results = quick_fut.result()
+
+            ok_badge = '<span class="badge ok">{}</span>'
+            fail_badge = '<span class="badge fail">{}</span>'
+            services_rows = "\n".join(
+                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+                    name,
+                    ok_badge.format("enabled") if info["enabled"] else fail_badge.format("disabled"),
+                    ok_badge.format("running") if info["running"] else fail_badge.format("down"),
+                )
+                for name, info in data["services"].items()
+            )
+            listeners_rows = "\n".join(
+                "<tr><td>{}</td><td>{}</td></tr>".format(
+                    port,
+                    ok_badge.format("listening") if ok else fail_badge.format("down"),
+                )
+                for port, ok in data["listeners"].items()
+            )
+            camera_mjpeg_http = quick_results.get("camera_mjpeg_http", "<span class=\"badge fail\">missing</span>")
+            webcam_stream_http = quick_results.get("webcam_stream_http", "<span class=\"badge fail\">missing</span>")
+            streams_http = quick_results.get("streams_http", "<span class=\"badge fail\">missing</span>")
+            info_http = quick_results.get("info_http", "<span class=\"badge fail\">missing</span>")
+            protocal_http = quick_results.get("protocal_http", "<span class=\"badge fail\">missing</span>")
+            server_info = quick_results.get("server_info", "<span class=\"badge fail\">missing</span>")
+            html = HTML_TEMPLATE.format(
+                hostname=data["hostname"],
+                timestamp=data["timestamp"],
+                uptime=data["uptime"],
+                load=data["load"],
+                services_rows=services_rows,
+                listeners_rows=listeners_rows,
+                camera_mjpeg_http=camera_mjpeg_http,
+                webcam_stream_http=webcam_stream_http,
+                streams_http=streams_http,
+                info_http=info_http,
+                protocal_http=protocal_http,
+                server_info=server_info,
+                lan_bridge_tail=data["logs"]["lan_bridge_tail"],
+                mjpeg_server_tail=data["logs"]["mjpeg_server_tail"],
+                go2rtc_tail=data["logs"]["go2rtc_tail"],
+                bind=BIND,
+                port=PORT,
+            )
+            self._html(html)
+            return
+        self.send_error(404)
+
+
+def main():
+    server = ThreadingHTTPServer((BIND, PORT), Handler)
+    print(f"nrvous status page at http://{BIND}:{PORT}/nrvous-status/")
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

@@ -19,9 +19,12 @@ The working path is:
 
 ## The important moving pieces
 
-- Printer-side compatibility backend: printer/creality_probe_backend.py
-- Printer route template: printer/nginx.compat.example.conf
-- Deployment script: printer/deploy_probe_backend.sh
+- Printer-side LAN compatibility backend: printer/lan_bridge.py (binds 127.0.0.1:9002)
+- Camera stack orchestrator: printer/restart_cam_stack.sh + printer/go2rtc_init.sh
+- Single-source H264 fan-out: printer/cam_delivery_bridge.py
+- RTSP -> MJPEG server: printer/mjpeg_server.py
+- Printer route templates: printer/creality.lan.locations.conf + printer/creality.lan.websocket.conf
+- Deployment script: printer/deploy_lan_bridge.sh
 - Contract checks: scripts/endpoint_contract_check.py and scripts/run_contract_check.sh
 - Local app bundle source tree: /Applications/Creality Print.app/Contents/Resources/web
 - Local app state cache: ~/Library/Application Support/Creality/Creality Print/7.0/
@@ -39,10 +42,10 @@ The fastest breakthroughs came from combining four things:
 ## Current printer-specific context
 
 - Target printer: root@192.168.1.100
-- Compatibility backend bind: 127.0.0.1:9001
+- LAN bridge backend bind: 127.0.0.1:9002 (WebSocket fronted by nginx on 9999)
 - Moonraker upstream: http://127.0.0.1:7126
 - Public host used by the app flow: 3d.nrvous.io
-- Debug log: /tmp/creality_probe_backend_debug.log
+- Camera debug logs: /tmp/cam_app_solo.log, /tmp/cam_delivery_bridge.log, /tmp/mjpeg_server_solo.log, /tmp/go2rtc_solo.log
 
 ## Pitfalls to avoid
 
@@ -53,9 +56,9 @@ The fastest breakthroughs came from combining four things:
 
 ## Good first moves when picking this up again
 
-1. Run the deploy script.
-2. Run the endpoint contract checks.
-3. Inspect the live debug log and the printer’s nginx/access logs.
+1. Run `./printer/deploy_lan_bridge.sh root@192.168.1.100`.
+2. Run `./scripts/run_contract_check.sh 192.168.1.100 80`.
+3. Inspect the camera logs and the printer’s nginx/access logs.
 4. Compare the live payloads to the stock app bundle expectations.
 5. Clear the Creality Print app cache if the UI still looks stale.
 
