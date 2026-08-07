@@ -11,11 +11,11 @@ This is an unofficial compatibility project maintained in spare time. Security f
 
 ## Reporting a vulnerability
 
-If you discover a security issue that could affect users of this project, please report it privately rather than opening a public issue.
+If you discover a security issue that could affect users of this project, please report it privately by email rather than opening a public issue.
 
-Email: security@kirchmeyer.net
+Email: **ostrich.toehold58@icloud.com**
 
-Please include:
+Pull requests and regular issues are otherwise welcome on GitHub. Please include:
 
 - A clear description of the issue.
 - Steps to reproduce, or a minimal proof of concept if possible.
