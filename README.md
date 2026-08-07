@@ -6,9 +6,6 @@ A printer-side compatibility layer for the stock Creality Print macOS app. The g
 git clone https://github.com/kirchmeyer/CrealityLANBridgeKit.git
 cd CrealityLANBridgeKit
 ```
-
-## What this project does
-
 ## What this project does
 
 - Runs a small LAN compatibility backend on the printer at `127.0.0.1:9002`.
