@@ -153,19 +153,17 @@ Browsers and the Creality Print app will not trust a self-signed certificate by 
 - For Home Assistant or Homebridge, most integrations allow you to disable TLS verification for local camera feeds, or you can install the `.crt` as trusted on the machine running the integration.
 - The safest long-term option is to use a real certificate from a public CA, for example via Let's Encrypt DNS validation if your DNS host supports it.
 
-### What if I can't install a certificate on the printer?
+### Using the local HTTP proxy
 
-The Creality Print desktop app adds LAN printers by IP and uses plain HTTP. If you cannot put a certificate on the printer itself, you can run a small local HTTPS proxy on your PC/Mac or home server instead:
+When the printer is installed in `proxy` LAN mode, plain HTTP is closed and only HTTPS is served. The Creality Print desktop app still needs to send plain HTTP, so run this small local proxy on the same Mac/PC:
 
 ```bash
-python3 scripts/local_https_proxy.py \
-  --upstream http://${PRINTER_HOST}:80 \
-  --listen 127.0.0.1:8443 \
-  --cert ./certs/${CERT_BASENAME}.crt \
-  --key ./certs/${CERT_BASENAME}.key
+python3 scripts/local_http_proxy.py \
+  --upstream https://${PUBLIC_HOST}:443 \
+  --listen 127.0.0.1:80
 ```
 
-Then point other tools at `https://<proxy-host>:8443/...`. The Creality app still talks to `http://${PRINTER_HOST}:80` directly. This is a fallback, not a security upgrade: traffic between the proxy and the printer remains plain HTTP.
+Then point the Creality Print app at `http://127.0.0.1`. The proxy accepts plain HTTP from the app and forwards to the printer over HTTPS. Listening on port 80 requires root/privileges on macOS; use `--listen 127.0.0.1:<port>` if you prefer a non-privileged port and can enter `127.0.0.1:<port>` in the app instead.
 
 ## LAN modes: open vs proxy
 
@@ -174,9 +172,9 @@ The installer supports two mutually exclusive LAN modes via `--lan-mode`:
 | Mode | What happens on port 80/81 | Use when |
 |------|-----------------------------|----------|
 | `open` (default) | The full LAN-app contract (`/info`, `/protocal.csp`, `/call/*`, uploads, camera, etc.) is available over plain HTTP on ports 80 and 81. | The Creality app adds the printer by IP, Home Assistant/Homebridge talk directly to the printer on HTTP, or you just want the easiest setup. |
-| `proxy` | Plain HTTP on ports 80 and 81 redirects everything to HTTPS. | You want to force HTTPS for the LAN flow and you are running the [local HTTPS proxy](#local-https-proxy) on the client that runs Creality Print. |
+| `proxy` | Plain HTTP on ports 80 and 81 redirects everything to HTTPS. | You want to force HTTPS for the LAN flow and you are running the local HTTP proxy on the client that runs Creality Print. |
 
-In `proxy` mode the printer itself still terminates TLS on port 443, but the desktop app cannot add the printer by IP because the app only speaks plain HTTP. You point the app at the local proxy's HTTPS address (`https://127.0.0.1:8443` or similar) instead of the printer's IP.
+In `proxy` mode the printer itself still terminates TLS on port 443, but the desktop app cannot add the printer by IP because the app only speaks plain HTTP. You point the app at the local proxy's HTTP address (`http://127.0.0.1` by default, or `http://127.0.0.1:<port>` if you changed `--listen`) instead of the printer's IP.
 
 Examples:
 
@@ -184,13 +182,11 @@ Examples:
 # Open LAN: desktop app adds printer by IP over HTTP
 ./install.sh install 192.168.1.100 root --lan-mode open
 
-# Proxy LAN: desktop app points at a local HTTPS proxy
+# Proxy LAN: desktop app points at the local HTTP proxy
 ./install.sh install 192.168.1.100 root --lan-mode proxy --public-host printer.lan
-python3 scripts/local_https_proxy.py \
+python3 scripts/local_http_proxy.py \
   --upstream https://printer.lan:443 \
-  --listen 127.0.0.1:8443 \
-  --cert ./certs/printer.lan.crt \
-  --key ./certs/printer.lan.key
+  --listen 127.0.0.1:80
 ```
 
 ## Installer commands

@@ -36,7 +36,7 @@ You should only install this on a printer you own and control, and you should un
 
 ## Common-sense precautions
 
-- Do not expose the printer or the optional local HTTPS proxy directly to the public internet without additional hardening.
+- Do not expose the printer or the optional local HTTP proxy directly to the public internet without additional hardening.
 - Use strong SSH keys for printer access; password-based root SSH is strongly discouraged.
 - Keep your printer on a trusted LAN segment, or put it behind a firewall with only the ports you need exposed.
 - Review `install.sh` and the generated nginx config before running them on your printer.

@@ -16,7 +16,7 @@
 #   --project-name NAME     prefix for backup manifest, service names, status path (default: $PROJECT_NAME or bridge)
 #   --status-path PATH      URL path for the status page (default: $STATUS_PATH or $PROJECT_NAME-status)
 #   --lan-mode open|proxy   open = plain HTTP LAN endpoints available (default);
-#                           proxy = plain HTTP closed, app uses local HTTPS proxy
+#                           proxy = plain HTTP closed, app uses local HTTP proxy
 #   --self-signed           generate a self-signed certificate if none exists
 #
 # Defaults: HOST=printer.lan, USER=root
@@ -76,7 +76,7 @@ Install options:
   --project-name NAME    prefix for backup manifest, service names, status path (default: \$PROJECT_NAME or bridge)
   --status-path PATH     URL path for the status page (default: \$STATUS_PATH or \$PROJECT_NAME-status)
   --lan-mode open|proxy  open = plain HTTP LAN endpoints available (default);
-                         proxy = plain HTTP closed, app uses local HTTPS proxy
+                         proxy = plain HTTP closed, app uses local HTTP proxy
   --self-signed          generate a self-signed certificate if none exists
 
 Environment defaults:
@@ -229,7 +229,7 @@ apply_config_templates() {
     # Select the HTTP server block based on LAN_MODE. In "open" mode the
     # Creality desktop app can add the printer by IP and use plain HTTP. In
     # "proxy" mode plain HTTP is closed and the app must be pointed at the
-    # local HTTPS proxy running on the client machine.
+    # local HTTP proxy running on the client machine.
     local nginx_staged="${STAGE_DIR}/printer/nginx.frontdoor.conf"
     local http_fragment="${STAGE_DIR}/printer/nginx.http.${LAN_MODE}.conf"
     if [[ ! -f "$http_fragment" ]]; then
@@ -470,7 +470,7 @@ verify_endpoints() {
     if [[ "$LAN_MODE" == "proxy" ]]; then
         # In proxy mode plain HTTP redirects to HTTPS; verify via HTTPS using the
         # public host (certificate may be self-signed, so hostname verification
-        # is skipped). The desktop app uses a local HTTPS proxy in this mode.
+        # is skipped). The desktop app uses a local HTTP proxy in this mode.
         python3 "${SCRIPT_DIR}/scripts/endpoint_contract_check.py" --host "$PUBLIC_HOST" --scheme https --port 443 --skip-upload
     else
         python3 "${SCRIPT_DIR}/scripts/endpoint_contract_check.py" --host "$HOST" --port 80 --skip-upload

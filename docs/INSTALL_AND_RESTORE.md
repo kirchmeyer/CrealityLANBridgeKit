@@ -91,14 +91,12 @@ Choose how the printer handles plain HTTP for the LAN-app flow:
 
 # proxy: plain HTTP redirects to HTTPS; point the desktop app at the local proxy
 ./install.sh install 192.168.1.100 root --lan-mode proxy --public-host printer.lan
-python3 scripts/local_https_proxy.py \
+python3 scripts/local_http_proxy.py \
   --upstream https://printer.lan:443 \
-  --listen 127.0.0.1:8443 \
-  --cert ./certs/printer.lan.crt \
-  --key ./certs/printer.lan.key
+  --listen 127.0.0.1:80
 ```
 
-See [README.md](../README.md) for more on the local HTTPS proxy.
+See [README.md](../README.md) for more on the local HTTP proxy.
 
 ### What `install.sh install` does
 
@@ -165,19 +163,17 @@ Browsers and the Creality Print app will not trust it by default. Options:
 - For Home Assistant, Homebridge, or other integrations, disable TLS verification for local feeds or install the `.crt` as trusted on the consuming host.
 - For the simplest long-term setup, use a real certificate from a public CA (for example, Let's Encrypt with DNS validation).
 
-#### Fallback: local HTTPS proxy on your PC/Mac
+#### Fallback: local HTTP proxy on your PC/Mac
 
-The Creality Print desktop app only supports plain HTTP for LAN-added printers. If you cannot install a certificate on the printer, you can terminate TLS on your own machine and forward to the printer over HTTP:
+The Creality Print desktop app only supports plain HTTP for LAN-added printers. If the printer is running in ``proxy`` LAN mode and only serves HTTPS, run this local proxy on the same Mac/PC and point the app at it:
 
 ```bash
-python3 scripts/local_https_proxy.py \
-  --upstream http://${PRINTER_HOST}:80 \
-  --listen 127.0.0.1:8443 \
-  --cert ./certs/${CERT_BASENAME}.crt \
-  --key ./certs/${CERT_BASENAME}.key
+python3 scripts/local_http_proxy.py \
+  --upstream https://${PUBLIC_HOST}:443 \
+  --listen 127.0.0.1:80
 ```
 
-This is useful for public reverse-proxy bridges or integrations that require HTTPS, but it is not end-to-end encryption: the hop from the proxy to the printer is still plain HTTP.
+Then add the printer in Creality Print as `http://127.0.0.1`. The proxy listens for plain HTTP from the app and forwards to the printer over HTTPS. Listening on port 80 requires root/privileges on macOS; use `--listen 127.0.0.1:<port>` if you prefer a non-privileged port and can enter `127.0.0.1:<port>` in the app instead.
 
 ---
 
