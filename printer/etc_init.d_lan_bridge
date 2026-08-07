@@ -18,7 +18,12 @@ start_service() {
     # Redirect stdout/stderr to a persistent log file so the status page and
     # post-mortem debugging have a stable source.
     procd_set_param command /bin/sh -c "exec /usr/bin/python3 '$PROG' >> '$LOG' 2>&1"
+    # Do not respawn indefinitely: if the bridge crashes repeatedly, leave it
+    # down so logs/errors are visible rather than flapping.
     procd_set_param respawn
+    procd_set_param respawn_threshold 3600
+    procd_set_param respawn_timeout 5
+    procd_set_param respawn_retry 3
     procd_close_instance
 }
 
