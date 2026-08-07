@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PRINTER_HOST="${1:-root@192.168.1.100}"
+PRINTER_HOST="${1:-${PRINTER_HOST:-root@192.168.1.100}}"
 
 echo "Deploying LAN bridge + camera stack to ${PRINTER_HOST}..."
 

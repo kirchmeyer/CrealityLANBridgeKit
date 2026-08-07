@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Printer status page for the nrvous.io Creality LAN bridge stack.
+"""Printer status page for the Creality LAN bridge stack.
 
-Served at /nrvous-status/ via nginx. The path prefix is deliberately unlikely to
+Served at /${PROJECT_NAME}-status/ via nginx (path is configurable via the
+STATUS_PATH environment variable). The path prefix is deliberately unlikely to
 clash with stock Creality, Fluidd, moonraker, or go2rtc routes.
 
 Reflects the current printer-side stack:
@@ -11,23 +12,84 @@ Reflects the current printer-side stack:
       cam_app -> cam_delivery_bridge -> /tmp/uvc_fifo + /tmp/go2rtc_cam.fifo
       go2rtc (:8554 RTSP, :1984 API) -> mjpeg_server (:8081 MJPEG)
       webrtc_local_bridge (:8000) for Creality Print LAN camera
-      cloud_webrtc_bridge (/tmp/uvc_fifo feeder) -> stock webrtc for Creality Cloud
+      /usr/bin/webrtc (/tmp/uvc_fifo consumer) -> stock Creality Cloud camera
   - moonraker (:7125) + klipper
   - app_cloud_only (stock app minus web-server; stock /etc/init.d/app disabled)
+
+Logs are emitted as ECS-compliant JSON lines to stdout.
 """
 import concurrent.futures
 import json
+import logging
 import os
 import re
 import socket
 import subprocess
 import sys
+import threading
+import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-PORT = int(os.environ.get("NRVOUS_STATUS_PORT", "8765"))
-BIND = os.environ.get("NRVOUS_STATUS_BIND", "127.0.0.1")
+ECS_VERSION = "8.11.0"
+PROJECT_NAME = os.environ.get("PROJECT_NAME", "bridge")
+STATUS_PATH = os.environ.get("STATUS_PATH", f"{PROJECT_NAME}-status")
+SERVICE_NAME = f"{PROJECT_NAME}-status-page"
+
+PORT = int(os.environ.get("STATUS_PORT", "8765"))
+BIND = os.environ.get("STATUS_BIND", "127.0.0.1")
+
+# Chamber/camera light control. Defaults are for the Creality K2 Plus; adapt
+# LIGHT_ON_GCODE/LIGHT_OFF_GCODE for other printers or set LIGHT_MOONRAKER_URL
+# to a custom endpoint.
+LIGHT_ON_GCODE = os.environ.get("LIGHT_ON_GCODE", "SET_PIN PIN=LED VALUE=1")
+LIGHT_OFF_GCODE = os.environ.get("LIGHT_OFF_GCODE", "SET_PIN PIN=LED VALUE=0")
+LIGHT_MOONRAKER_URL = os.environ.get("LIGHT_MOONRAKER_URL", "http://127.0.0.1:7125")
+
+
+class _EcsFormatter(logging.Formatter):
+    """Emit log records as Elastic Common Schema (ECS) JSON lines."""
+
+    def format(self, record):
+        ts = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        doc = {
+            "@timestamp": ts,
+            "ecs.version": ECS_VERSION,
+            "log.level": record.levelname.lower(),
+            "message": record.getMessage(),
+            "event.dataset": f"{SERVICE_NAME}.log",
+            "service.name": SERVICE_NAME,
+            "service.version": "1.0.0",
+            "host.name": socket.gethostname(),
+            "process.pid": record.process,
+            "process.thread.id": record.thread,
+        }
+        if record.exc_info:
+            exc_type, exc_value, exc_tb = record.exc_info
+            doc["error.type"] = exc_type.__name__ if exc_type else None
+            doc["error.message"] = str(exc_value) if exc_value else None
+            doc["error.stack_trace"] = "".join(traceback.format_exception(*record.exc_info)).strip() if exc_type else None
+        if hasattr(record, "ecs"):
+            doc.update(record.ecs)
+        return json.dumps(doc, separators=(",", ":"), default=str)
+
+
+def _configure_logging():
+    use_ecs = os.environ.get("ECS_LOGGING", "1").strip().lower() not in ("0", "false", "off", "no")
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(_EcsFormatter() if use_ecs else logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers = [handler]
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        logging.getLogger().error("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+    sys.excepthook = _excepthook
+
+
+_configure_logging()
+logger = logging.getLogger(SERVICE_NAME)
 
 
 def run(cmd, timeout=1):
@@ -157,6 +219,32 @@ def get_best_tail(preferred_path, fallback_paths=None, logread_tag=None, n=20):
 _status_cache = {"data": None, "expires": 0.0, "ttl": 8.0}
 _quick_cache = {"data": None, "expires": 0.0, "ttl": 5.0}
 
+# In-memory light state. We assume the light starts in an unknown state and
+# track the last command issued. Moonraker does not expose a generic LED
+# object name across Creality boards, so we drive it via gcode by default.
+_light_state = {"state": "unknown", "since": datetime.now(timezone.utc).isoformat()}
+
+
+def _set_light(state):
+    """Send a light on/off command through Moonraker's gcode/script endpoint.
+
+    Returns (ok, detail). state must be "on" or "off".
+    """
+    import urllib.request
+    import urllib.parse
+    gcode = LIGHT_ON_GCODE if state == "on" else LIGHT_OFF_GCODE
+    url = f"{LIGHT_MOONRAKER_URL}/printer/gcode/script"
+    body = urllib.parse.urlencode({"script": gcode}).encode()
+    try:
+        req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/x-www-form-urlencoded"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            _ = r.read()
+        _light_state["state"] = state
+        _light_state["since"] = datetime.now(timezone.utc).isoformat()
+        return True, f"sent {gcode}"
+    except Exception as exc:
+        return False, str(exc)
+
 
 def _service_status(name, pattern, svc):
     return name, {"enabled": is_enabled(svc), "running": is_running(pattern)}
@@ -261,29 +349,32 @@ HTML_TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>nrvous bridge status</title>
+<title>{project_name} bridge status</title>
 <style>
 :root {{ color-scheme: dark; }}
 body {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background:#0d1117; color:#c9d1d9; margin:0; padding:2rem; line-height:1.5; }}
 h1 {{ color:#58a6ff; margin-bottom:.25rem; }}
 .sub {{ color:#8b949e; margin-bottom:1.5rem; }}
-.grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:1rem; }}
-.card {{ background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem; }}
+.grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:1rem; align-items: start; }}
+.card {{ background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem; min-width:0; overflow:auto; }}
 .card h2 {{ margin:0 0 .75rem; font-size:1rem; color:#79c0ff; }}
-table {{ width:100%; border-collapse: collapse; }}
-th, td {{ text-align:left; padding:.35rem .5rem; }}
+table {{ width:100%; border-collapse: collapse; table-layout: fixed; }}
+th, td {{ text-align:left; padding:.35rem .5rem; overflow-wrap:anywhere; word-break:break-word; vertical-align: middle; }}
 th {{ color:#8b949e; font-weight:normal; border-bottom:1px solid #30363d; }}
-.badge {{ display:inline-block; padding:.15rem .5rem; border-radius:999px; font-size:.75rem; font-weight:bold; }}
+.badge {{ display:inline-block; padding:.15rem .5rem; border-radius:999px; font-size:.75rem; font-weight:bold; white-space:nowrap; }}
 .ok {{ background:#238636; color:#fff; }}
 .fail {{ background:#da3633; color:#fff; }}
 .warn {{ background:#9e6a03; color:#fff; }}
 pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:.75rem; overflow:auto; font-size:.8rem; max-height:12rem; white-space:pre-wrap; word-break:break-word; }}
 .footer {{ margin-top:2rem; color:#8b949e; font-size:.8rem; }}
 .note {{ margin-top:1rem; color:#8b949e; font-size:.85rem; background:#161b22; border:1px solid #30363d; border-radius:6px; padding:.75rem; }}
+.btn {{ background:#1f6feb; color:#fff; border:1px solid #388bfd; border-radius:6px; padding:.5rem 1rem; font-size:.9rem; cursor:pointer; margin-right:.5rem; }}
+.btn:hover {{ background:#388bfd; }}
+.btn:disabled {{ opacity:.6; cursor:not-allowed; }}
 </style>
 </head>
 <body>
-<h1>🖨️ nrvous bridge status</h1>
+<h1>🖨️ {project_name} bridge status</h1>
 <p class="sub">{hostname} · {timestamp} · uptime {uptime} · load {load}</p>
 <div class="grid">
   <div class="card">
@@ -314,6 +405,15 @@ pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:
       <tr><td>/server/info</td><td>{server_info}</td></tr>
     </table>
   </div>
+  <div class="card" style="grid-column: 1 / -1;">
+    <h2>Chamber / camera LED</h2>
+    <p class="sub">State: <span id="light-state" class="badge warn">checking...</span></p>
+    <p>
+      <button class="btn" id="light-on" onclick="setLight('on')">Light on</button>
+      <button class="btn" id="light-off" onclick="setLight('off')">Light off</button>
+    </p>
+    <p id="light-detail" class="note"></p>
+  </div>
   <div class="card">
     <h2>lan_bridge log tail</h2>
     <pre>{lan_bridge_tail}</pre>
@@ -336,7 +436,37 @@ pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:
   </div>
 </div>
 <p class="note"><strong>Note:</strong> The stock <code>/etc/init.d/app</code> is disabled so only <code>/etc/init.d/app_cloud_only</code> starts at boot. The <code>/usr/bin/Monitor</code> process (which respawned <code>web-server</code>, <code>display-server</code>, and <code>webrtc_local</code>) has been stopped and did not respawn. "manual" services are started by our camera-stack init even though their stock init script is disabled at boot. The camera stack uses a single <code>cam_app</code> source; the separate <code>cloud_webrtc_bridge.py</code> feeder has been retired.</p>
-<p class="footer">Served by nrvous_status_page.py on {bind}:{port}</p>
+<p class="footer">Served by {project_name} status page on {bind}:{port}</p>
+<script>
+const API = window.location.pathname.replace(/\\/$/, '') + '/api/light';
+async function refreshLight() {{
+  try {{
+    const r = await fetch(API);
+    const j = await r.json();
+    const el = document.getElementById('light-state');
+    el.textContent = j.state;
+    el.className = 'badge ' + (j.state === 'on' ? 'ok' : j.state === 'off' ? 'fail' : 'warn');
+  }} catch (e) {{
+    document.getElementById('light-state').textContent = 'unknown';
+  }}
+}}
+async function setLight(state) {{
+  document.getElementById('light-on').disabled = true;
+  document.getElementById('light-off').disabled = true;
+  try {{
+    const r = await fetch(API, {{ method: 'POST', headers: {{'Content-Type':'application/x-www-form-urlencoded'}}, body: 'state=' + state }});
+    const j = await r.json();
+    document.getElementById('light-detail').textContent = j.ok ? ('OK: ' + j.detail) : ('Error: ' + j.detail);
+    await refreshLight();
+  }} catch (e) {{
+    document.getElementById('light-detail').textContent = 'Error: ' + e;
+  }} finally {{
+    document.getElementById('light-on').disabled = false;
+    document.getElementById('light-off').disabled = false;
+  }}
+}}
+refreshLight();
+</script>
 </body>
 </html>"""
 
@@ -503,14 +633,33 @@ def check_url_post_webrtc(url, host=None):
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        pass
+        # Emit ECS-compliant access log entry.
+        try:
+            status = int(args[1]) if len(args) > 1 else 0
+        except Exception:
+            status = 0
+        ecs = {
+            "event.category": ["web"],
+            "event.kind": "event",
+            "event.outcome": "success" if 200 <= status < 400 else "failure",
+            "http.request.method": self.command,
+            "http.response.status_code": status,
+            "url.path": self.path,
+            "url.original": self.path,
+            "source.ip": self.client_address[0] if self.client_address else None,
+            "source.port": self.client_address[1] if self.client_address else None,
+            "destination.address": BIND,
+            "destination.port": PORT,
+            "http.request.bytes": int(self.headers.get("Content-Length", 0)),
+        }
+        logger.info(f"{self.command} {self.path} {status}", extra={"ecs": ecs})
 
     def handle(self):
         try:
             super().handle()
         except (BrokenPipeError, ConnectionResetError):
             # Client disconnected before we finished sending; not a server bug.
-            pass
+            logger.debug("Client disconnected mid-request", exc_info=True)
 
     def _json(self, obj):
         self.send_response(200)
@@ -524,11 +673,36 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body.encode())
 
+    def _read_post_body(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        return self.rfile.read(length).decode() if length > 0 else ""
+
+    def do_POST(self):
+        status_prefix = f"/{STATUS_PATH}"
+        if self.path == f"{status_prefix}/api/light":
+            body = self._read_post_body()
+            state = ""
+            for part in body.split("&"):
+                if part.startswith("state="):
+                    state = part.split("=", 1)[1]
+                    break
+            if state not in ("on", "off"):
+                self.send_error(400, f"invalid state {state!r}; use on or off")
+                return
+            ok, detail = _set_light(state)
+            self._json({"ok": ok, "state": _light_state["state"], "detail": detail})
+            return
+        self.send_error(404)
+
     def do_GET(self):
-        if self.path == "/nrvous-status/api/status.json":
+        status_prefix = f"/{STATUS_PATH}"
+        if self.path == f"{status_prefix}/api/light":
+            self._json({"state": _light_state["state"], "since": _light_state["since"]})
+            return
+        if self.path == f"{status_prefix}/api/status.json":
             self._json(collect_status())
             return
-        if self.path in ("/nrvous-status/", "/nrvous-status"):
+        if self.path in (f"{status_prefix}/", status_prefix):
             # Collect service/listener state and probe public endpoints in
             # parallel; the slowest path should dominate, not the sum.
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
@@ -586,6 +760,7 @@ class Handler(BaseHTTPRequestHandler):
                 monitor_tail=data["logs"]["monitor_tail"],
                 bind=BIND,
                 port=PORT,
+                project_name=PROJECT_NAME,
             )
             self._html(html)
             return
@@ -599,15 +774,14 @@ class ReuseAddrThreadingHTTPServer(ThreadingHTTPServer):
 def main():
     # Pre-warm the status cache in a background thread so the first HTTP
     # request doesn't pay the full probe cost.
-    import threading
     def _warm():
         try:
             collect_status()
         except Exception:
-            pass
+            logger.warning("Cache warm-up failed", exc_info=True)
     threading.Thread(target=_warm, daemon=True).start()
     server = ReuseAddrThreadingHTTPServer((BIND, PORT), Handler)
-    print(f"nrvous status page at http://{BIND}:{PORT}/nrvous-status/")
+    logger.info(f"{PROJECT_NAME} status page listening on http://{BIND}:{PORT}/{STATUS_PATH}/")
     server.serve_forever()
 
 

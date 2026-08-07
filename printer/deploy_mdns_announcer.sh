@@ -19,8 +19,8 @@ if [[ ! -f "$SOURCE_INIT" ]]; then
     exit 1
 fi
 
-HOST="${HOST:-192.168.1.100}"
-REMOTE_USER="${REMOTE_USER:-root}"
+HOST="${HOST:-${PRINTER_HOST:-192.168.1.100}}"
+REMOTE_USER="${REMOTE_USER:-${PRINTER_USER:-root}}"
 REMOTE_ANNOUNCER="/usr/local/bin/creality_mdns_announcer.py"
 REMOTE_INIT="/etc/init.d/creality_mdns"
 

@@ -15,21 +15,72 @@ Data sources:
   - Moonraker http://127.0.0.1:7125 (state, temps, progress)
 
 Run directly:
-  PUBLIC_HOST=3d.nrvous.io python3 printer/lan_bridge.py
+  PUBLIC_HOST=printer.lan python3 printer/lan_bridge.py
 """
 
 import base64
 import glob
 import hashlib
 import json
+import logging
 import os
 import select
 import socket
 import struct
+import sys
 import threading
+import traceback
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+ECS_VERSION = "8.11.0"
+PROJECT_NAME = os.environ.get("PROJECT_NAME", "bridge")
+SERVICE_NAME = f"{PROJECT_NAME}-lan-bridge"
+
+
+class _EcsFormatter(logging.Formatter):
+    """Emit log records as Elastic Common Schema (ECS) JSON lines."""
+
+    def format(self, record):
+        ts = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        doc = {
+            "@timestamp": ts,
+            "ecs.version": ECS_VERSION,
+            "log.level": record.levelname.lower(),
+            "message": record.getMessage(),
+            "event.dataset": f"{SERVICE_NAME}.log",
+            "service.name": SERVICE_NAME,
+            "service.version": "1.0.0",
+            "host.name": socket.gethostname(),
+            "process.pid": record.process,
+            "process.thread.id": record.thread,
+        }
+        if record.exc_info:
+            exc_type, exc_value, exc_tb = record.exc_info
+            doc["error.type"] = exc_type.__name__ if exc_type else None
+            doc["error.message"] = str(exc_value) if exc_value else None
+            doc["error.stack_trace"] = "".join(traceback.format_exception(*record.exc_info)).strip() if exc_type else None
+        if hasattr(record, "ecs"):
+            doc.update(record.ecs)
+        return json.dumps(doc, separators=(",", ":"), default=str)
+
+
+def _configure_logging():
+    use_ecs = os.environ.get("ECS_LOGGING", "1").strip().lower() not in ("0", "false", "off", "no")
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(_EcsFormatter() if use_ecs else logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers = [handler]
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        logging.getLogger().error("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+    sys.excepthook = _excepthook
+
+
+_configure_logging()
+logger = logging.getLogger(SERVICE_NAME)
 
 MOONRAKER_URL = os.environ.get("MOONRAKER_URL", "http://127.0.0.1:7125").rstrip("/")
 PUBLIC_HOST = os.environ.get("PUBLIC_HOST", "").strip()
@@ -365,9 +416,22 @@ def _send_gcode(script, timeout=10.0):
 
 
 def _debug_log(line):
+    """Append a debug trace line to /tmp/lan_bridge_debug.log as ECS JSON."""
     try:
+        ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        doc = {
+            "@timestamp": ts,
+            "ecs.version": ECS_VERSION,
+            "log.level": "debug",
+            "message": line,
+            "event.dataset": f"{SERVICE_NAME}.debug",
+            "service.name": SERVICE_NAME,
+            "service.version": "1.0.0",
+            "host.name": socket.gethostname(),
+            "process.pid": os.getpid(),
+        }
         with open("/tmp/lan_bridge_debug.log", "a", encoding="utf-8") as fh:
-            fh.write(f"{datetime.now(timezone.utc).isoformat()} {line}\n")
+            fh.write(json.dumps(doc, separators=(",", ":"), default=str) + "\n")
     except Exception:
         pass
 
@@ -1194,8 +1258,30 @@ class LanBridgeHandler(BaseHTTPRequestHandler):
     server_version = "LanBridge/0.1"
 
     def log_message(self, fmt, *args):
-        # Suppress noisy request logging; rely on nginx logs.
+        # Route to log_request for ECS-formatted access logs.
         pass
+
+    def log_request(self, code="-", size="-"):
+        try:
+            client = self.client_address[0] if self.client_address else None
+            logger.info(
+                "HTTP request",
+                extra={
+                    "ecs": {
+                        "http.request.method": self.command,
+                        "http.request.body.bytes": self.headers.get("Content-Length"),
+                        "url.original": self.path,
+                        "url.path": self.path.split("?", 1)[0] if "?" in self.path else self.path,
+                        "url.query": self.path.split("?", 1)[1] if "?" in self.path else None,
+                        "source.ip": client,
+                        "client.ip": client,
+                        "http.response.status_code": int(code) if str(code).isdigit() else code,
+                        "http.response.body.bytes": int(size) if str(size).isdigit() else size,
+                    }
+                },
+            )
+        except Exception:
+            logger.exception("Failed to emit access log")
 
     def do_GET(self):
         _debug_log(f"HTTP_GET {self.path}")
@@ -1203,22 +1289,30 @@ class LanBridgeHandler(BaseHTTPRequestHandler):
             self.serve_websocket()
             return
         path = self.path.split("?", 1)[0]
-        if path == "/info":
-            self.send_json(_build_info_payload())
-        elif path == "/protocal.csp":
-            self.send_json(_build_protocal_payload())
-        elif path == "/status":
-            self.send_json({"ok": True, "backend": "lan_bridge"})
-        else:
-            self.send_error(404)
+        try:
+            if path == "/info":
+                self.send_json(_build_info_payload())
+            elif path == "/protocal.csp":
+                self.send_json(_build_protocal_payload())
+            elif path == "/status":
+                self.send_json({"ok": True, "backend": "lan_bridge"})
+            else:
+                self.send_error(404)
+        except Exception:
+            logger.exception("GET handler failed", extra={"ecs": {"url.path": path}})
+            self.send_error(500)
 
     def do_POST(self):
         _debug_log(f"HTTP_POST {self.path}")
         path = self.path.split("?", 1)[0]
-        if path.startswith("/upload/"):
-            self._handle_upload(path)
-            return
-        self.send_error(404)
+        try:
+            if path.startswith("/upload/"):
+                self._handle_upload(path)
+                return
+            self.send_error(404)
+        except Exception:
+            logger.exception("POST handler failed", extra={"ecs": {"url.path": path}})
+            self.send_error(500)
 
     def _handle_upload(self, path):
         try:
@@ -1251,12 +1345,17 @@ class LanBridgeHandler(BaseHTTPRequestHandler):
                 self.wfile.write(ok_body)
         except urllib.error.HTTPError as e:
             body = e.read()
+            logger.warning(
+                "Upload upstream HTTP error",
+                extra={"ecs": {"http.response.status_code": e.code, "url.path": path}},
+            )
             self.send_response(e.code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
         except Exception as e:
+            logger.exception("Upload handler failed", extra={"ecs": {"url.path": path}})
             self.send_error(500, str(e))
 
     def send_json(self, obj):
@@ -1387,11 +1486,16 @@ def main():
     host = os.environ.get("LAN_BRIDGE_HOST", "127.0.0.1")
     port = int(os.environ.get("LAN_BRIDGE_PORT", "9002"))
     server = ThreadingHTTPServer((host, port), LanBridgeHandler)
-    print(f"lan_bridge listening on {host}:{port}")
+    logger.info(
+        "LAN bridge listening",
+        extra={"ecs": {"server.address": host, "server.port": port}},
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        pass
+        logger.info("Shutting down on keyboard interrupt")
+    except Exception:
+        logger.exception("Server crashed")
 
 
 if __name__ == "__main__":

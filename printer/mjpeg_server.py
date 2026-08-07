@@ -5,12 +5,65 @@ Runs ffmpeg with -c:v copy and fans out MJPEG frames to multiple HTTP clients.
 This works around ffmpeg's -listen mode which exits after a single connection.
 """
 import http.server
+import json
+import logging
 import os
+import socket
 import socketserver
 import subprocess
 import sys
 import threading
 import time
+import traceback
+from datetime import datetime, timezone
+
+ECS_VERSION = "8.11.0"
+PROJECT_NAME = os.environ.get("PROJECT_NAME", "bridge")
+SERVICE_NAME = f"{PROJECT_NAME}-mjpeg-server"
+
+
+class _EcsFormatter(logging.Formatter):
+    """Emit log records as Elastic Common Schema (ECS) JSON lines."""
+
+    def format(self, record):
+        ts = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        doc = {
+            "@timestamp": ts,
+            "ecs.version": ECS_VERSION,
+            "log.level": record.levelname.lower(),
+            "message": record.getMessage(),
+            "event.dataset": f"{SERVICE_NAME}.log",
+            "service.name": SERVICE_NAME,
+            "service.version": "1.0.0",
+            "host.name": socket.gethostname(),
+            "process.pid": record.process,
+            "process.thread.id": record.thread,
+        }
+        if record.exc_info:
+            exc_type, exc_value, exc_tb = record.exc_info
+            doc["error.type"] = exc_type.__name__ if exc_type else None
+            doc["error.message"] = str(exc_value) if exc_value else None
+            doc["error.stack_trace"] = "".join(traceback.format_exception(*record.exc_info)).strip() if exc_type else None
+        if hasattr(record, "ecs"):
+            doc.update(record.ecs)
+        return json.dumps(doc, separators=(",", ":"), default=str)
+
+
+def _configure_logging():
+    use_ecs = os.environ.get("ECS_LOGGING", "1").strip().lower() not in ("0", "false", "off", "no")
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(_EcsFormatter() if use_ecs else logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers = [handler]
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        logging.getLogger().error("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+    sys.excepthook = _excepthook
+
+
+_configure_logging()
+logger = logging.getLogger(SERVICE_NAME)
 
 BIND = os.environ.get("MJPEG_BIND", "127.0.0.1")
 PORT = int(os.environ.get("MJPEG_PORT", "8081"))
@@ -94,8 +147,8 @@ def ffmpeg_reader():
                     latest_frame = frame
                     frame_cond.notify_all()
             proc.wait()
-        except Exception as e:
-            print(f"mjpeg_server: ffmpeg error: {e}", file=sys.stderr)
+        except Exception:
+            logger.exception("ffmpeg reader error")
         time.sleep(1)
 
 
@@ -184,11 +237,16 @@ def main():
         time.sleep(0.1)
 
     server = ReusableTCPServer((BIND, PORT), MJPEGHandler)
-    print(f"mjpeg_server: listening on http://{BIND}:{PORT}/cam.mjpg", file=sys.stderr)
+    logger.info(
+        "MJPEG server listening",
+        extra={"ecs": {"server.address": BIND, "server.port": PORT}},
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        pass
+        logger.info("Shutting down on keyboard interrupt")
+    except Exception:
+        logger.exception("Server crashed")
     finally:
         server.shutdown()
 

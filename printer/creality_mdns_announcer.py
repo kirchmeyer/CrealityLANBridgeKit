@@ -12,12 +12,64 @@ Announces _Creality-{SN}._udp.local with real keybox SN/MAC values and
 responds to mDNS queries for that service. The SRV record advertises the
 HTTP endpoint port (default 80) where the Creality app expects /info etc.
 """
+import json
+import logging
 import os
 import socket
 import struct
 import subprocess
 import sys
 import time
+import traceback
+from datetime import datetime, timezone
+
+ECS_VERSION = "8.11.0"
+PROJECT_NAME = os.environ.get("PROJECT_NAME", "bridge")
+SERVICE_NAME = f"{PROJECT_NAME}-mdns-announcer"
+
+
+class _EcsFormatter(logging.Formatter):
+    """Emit log records as Elastic Common Schema (ECS) JSON lines."""
+
+    def format(self, record):
+        ts = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        doc = {
+            "@timestamp": ts,
+            "ecs.version": ECS_VERSION,
+            "log.level": record.levelname.lower(),
+            "message": record.getMessage(),
+            "event.dataset": f"{SERVICE_NAME}.log",
+            "service.name": SERVICE_NAME,
+            "service.version": "1.0.0",
+            "host.name": socket.gethostname(),
+            "process.pid": record.process,
+            "process.thread.id": record.thread,
+        }
+        if record.exc_info:
+            exc_type, exc_value, exc_tb = record.exc_info
+            doc["error.type"] = exc_type.__name__ if exc_type else None
+            doc["error.message"] = str(exc_value) if exc_value else None
+            doc["error.stack_trace"] = "".join(traceback.format_exception(*record.exc_info)).strip() if exc_type else None
+        if hasattr(record, "ecs"):
+            doc.update(record.ecs)
+        return json.dumps(doc, separators=(",", ":"), default=str)
+
+
+def _configure_logging():
+    use_ecs = os.environ.get("ECS_LOGGING", "1").strip().lower() not in ("0", "false", "off", "no")
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(_EcsFormatter() if use_ecs else logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers = [handler]
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        logging.getLogger().error("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+    sys.excepthook = _excepthook
+
+
+_configure_logging()
+logger = logging.getLogger(SERVICE_NAME)
 
 MDNS_GROUP = "224.0.0.251"
 MDNS_PORT = 5353
@@ -54,7 +106,7 @@ def get_ipv4():
         s.connect(("8.8.8.8", 80))
         return s.getsockname()[0]
     except Exception:
-        return "192.168.1.100"
+        return os.environ.get("MDNS_FALLBACK_IP", "127.0.0.1")
     finally:
         s.close()
 
@@ -281,11 +333,19 @@ def main():
     records = build_response_records(sn, mac, model, hostname, service_port, ipv4, truncate_txt)
     service_type = records["service_type"]
 
-    print(f"Announcing {service_type}", file=sys.stderr)
-    print(
-        f"SN={sn} MAC={mac} MODEL={model} HOST={hostname} IP={ipv4} SERVICE_PORT={service_port} "
-        f"TRUNCATE_TXT={truncate_txt}",
-        file=sys.stderr,
+    logger.info(
+        "Announcing mDNS service",
+        extra={
+            "ecs": {
+                "service.type": service_type,
+                "device.serial_number": sn,
+                "host.mac": mac,
+                "device.model.identifier": model,
+                "host.name": hostname,
+                "client.ip": ipv4,
+                "server.port": service_port,
+            }
+        },
     )
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -331,7 +391,10 @@ def main():
 
                 resp = respond_to_query(data, records)
                 if resp:
-                    print(f"Query from {addr}, responding ({len(resp)} bytes)", file=sys.stderr)
+                    logger.debug(
+                        "mDNS query response",
+                        extra={"ecs": {"client.ip": addr[0], "client.port": addr[1], "http.response.body.bytes": len(resp)}},
+                    )
                     sock.sendto(resp, (MDNS_GROUP, MDNS_PORT))
                     last_announce = time.monotonic()
 
@@ -344,7 +407,7 @@ def main():
 
             if time.monotonic() - last_announce >= announce_interval:
                 sock.sendto(announcement, (MDNS_GROUP, MDNS_PORT))
-                print("Sent periodic announcement", file=sys.stderr)
+                logger.debug("Sent periodic mDNS announcement")
                 last_announce = time.monotonic()
     except KeyboardInterrupt:
         pass

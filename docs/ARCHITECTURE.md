@@ -25,7 +25,7 @@ This page describes how the printer, the compatibility backend, the desktop app,
 │  │  └──────────────┘    │                                                   │
 │  └─────────┬────────────┘                                                   │
 │            │                                                                 │
-│            │ port 80 / 9999 / 443 (public host 3d.nrvous.io)               │
+│            │ port 80 / 9999 / 443 (public host printer.lan)                │
 │            ▼                                                                 │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │                       OpenWrt router / printer                       │    │

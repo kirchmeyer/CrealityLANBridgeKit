@@ -1,9 +1,10 @@
 #!/bin/sh
 # Re-enable the stock Creality app services and restore the original nginx config.
-# This undoes printer/deploy_nginx_frontdoor.sh so web-server reclaims ports 80/443.
+# This undoes the front-door install so web-server reclaims ports 80/443.
+# Prefer: ./install.sh restore [HOST] [USER]
 set -e
 
-HOST=${1:-root@192.168.1.100}
+HOST=${1:-${PRINTER_HOST:-root@192.168.1.100}}
 
 echo "==> Restoring stock app service and nginx config on $HOST"
 
@@ -16,8 +17,10 @@ ssh "$HOST" '
     /etc/init.d/lan_bridge stop 2>/dev/null || true
     /etc/init.d/go2rtc disable 2>/dev/null || true
     /etc/init.d/go2rtc stop 2>/dev/null || true
-    /etc/init.d/nrvous_status_page disable 2>/dev/null || true
-    /etc/init.d/nrvous_status_page stop 2>/dev/null || true
+    /etc/init.d/status_page disable 2>/dev/null || true
+    /etc/init.d/status_page stop 2>/dev/null || true
+    /etc/init.d/watchdog disable 2>/dev/null || true
+    /etc/init.d/watchdog stop 2>/dev/null || true
 
     # Restore original nginx config if backup exists.
     if [ -f /etc/nginx/nginx.conf.bak ]; then

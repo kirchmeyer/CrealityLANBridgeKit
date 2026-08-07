@@ -12,6 +12,8 @@ By making cam_app the single owner of /dev/video0 and pulling frames from its
 deliveryStation output, both the Creality Cloud path and the LAN path get the
 same live H264 feed without contending for the V4L2 device.
 """
+import json
+import logging
 import os
 import socket
 import stat
@@ -20,6 +22,56 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
+from datetime import datetime, timezone
+
+ECS_VERSION = "8.11.0"
+PROJECT_NAME = os.environ.get("PROJECT_NAME", "bridge")
+SERVICE_NAME = f"{PROJECT_NAME}-cam-delivery-bridge"
+
+
+class _EcsFormatter(logging.Formatter):
+    """Emit log records as Elastic Common Schema (ECS) JSON lines."""
+
+    def format(self, record):
+        ts = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        doc = {
+            "@timestamp": ts,
+            "ecs.version": ECS_VERSION,
+            "log.level": record.levelname.lower(),
+            "message": record.getMessage(),
+            "event.dataset": f"{SERVICE_NAME}.log",
+            "service.name": SERVICE_NAME,
+            "service.version": "1.0.0",
+            "host.name": socket.gethostname(),
+            "process.pid": record.process,
+            "process.thread.id": record.thread,
+        }
+        if record.exc_info:
+            exc_type, exc_value, exc_tb = record.exc_info
+            doc["error.type"] = exc_type.__name__ if exc_type else None
+            doc["error.message"] = str(exc_value) if exc_value else None
+            doc["error.stack_trace"] = "".join(traceback.format_exception(*record.exc_info)).strip() if exc_type else None
+        if hasattr(record, "ecs"):
+            doc.update(record.ecs)
+        return json.dumps(doc, separators=(",", ":"), default=str)
+
+
+def _configure_logging():
+    use_ecs = os.environ.get("ECS_LOGGING", "1").strip().lower() not in ("0", "false", "off", "no")
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(_EcsFormatter() if use_ecs else logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers = [handler]
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        logging.getLogger().error("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+    sys.excepthook = _excepthook
+
+
+_configure_logging()
+logger = logging.getLogger(SERVICE_NAME)
 
 DELIVERY_PATH = "/tmp/delivery_socket100"
 # Subscription request observed from /usr/bin/webrtc client -> cam_app server.
@@ -63,8 +115,8 @@ def _ensure_fifo(path):
             if not stat.S_ISFIFO(os.stat(path).st_mode):
                 os.remove(path)
         os.mkfifo(path)
-    except Exception as e:
-        print(f"fifo error {path}: {e}", file=sys.stderr)
+    except Exception:
+        logger.exception("fifo setup failed", extra={"ecs": {"file.path": path}})
 
 
 def _open_fifo(path):
@@ -97,7 +149,7 @@ def delivery_loop(lan_fh, cloud_fh):
             s.settimeout(10)
             s.connect(DELIVERY_PATH)
             s.sendall(SUBSCRIBE_REQ)
-            print("delivery: subscribed", file=sys.stderr)
+            logger.info("Subscribed to delivery socket")
             while True:
                 chunk = s.recv(65536)
                 if not chunk:
@@ -106,7 +158,7 @@ def delivery_loop(lan_fh, cloud_fh):
                 while len(buf) >= 8:
                     length = struct.unpack("<I", buf[:4])[0]
                     if length > 2_000_000 or length < 0:
-                        print("delivery: bad length", length, file=sys.stderr)
+                        logger.warning("Bad delivery message length", extra={"ecs": {"error.message": str(length)}})
                         buf = b""
                         break
                     total = length + 8
@@ -116,8 +168,8 @@ def delivery_loop(lan_fh, cloud_fh):
                     buf = buf[total:]
                     _write_all(lan_fh, payload)
                     _write_all(cloud_fh, payload)
-        except Exception as e:
-            print(f"delivery error: {e}", file=sys.stderr)
+        except Exception:
+            logger.exception("Delivery loop error")
         time.sleep(2)
 
 
@@ -126,12 +178,21 @@ def main():
     _ensure_fifo(CLOUD_FIFO)
     _declare_camera_online()
     threading.Thread(target=_camera_heartbeat, daemon=True).start()
+    logger.info(
+        "Camera delivery bridge starting",
+        extra={"ecs": {"file.path": f"{LAN_FIFO},{CLOUD_FIFO}"}},
+    )
 
     # Both FIFOs are opened O_RDWR so consumers can connect/disconnect without
     # stalling the bridge. The bridge never reads from these fds, so the actual
     # consumers (go2rtc for LAN, /usr/bin/webrtc for cloud) get every frame.
-    with _open_fifo(LAN_FIFO) as lan_fh, _open_fifo(CLOUD_FIFO) as cloud_fh:
-        delivery_loop(lan_fh, cloud_fh)
+    try:
+        with _open_fifo(LAN_FIFO) as lan_fh, _open_fifo(CLOUD_FIFO) as cloud_fh:
+            delivery_loop(lan_fh, cloud_fh)
+    except KeyboardInterrupt:
+        logger.info("Shutting down on keyboard interrupt")
+    except Exception:
+        logger.exception("Delivery bridge crashed")
 
 
 if __name__ == "__main__":

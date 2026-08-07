@@ -1,5 +1,5 @@
 #!/bin/sh
-# Custom watchdog for the nrvous.io Creality LAN bridge stack.
+# Custom watchdog for the Creality LAN bridge stack.
 #
 # Strategy:
 #   - Use existing procd init scripts for restart; this watchdog only decides
@@ -9,20 +9,50 @@
 #   - Log every action and avoid noisy loops.
 
 INTERVAL=${INTERVAL:-30}
-LOG_TAG="nrvous_watchdog"
-MAX_LOG_BYTES=${MAX_LOG_BYTES:-65536}
+PROJECT_NAME=${PROJECT_NAME:-bridge}
+LOG_TAG="${PROJECT_NAME}_watchdog"
+MAX_LOG_LINES=${MAX_LOG_LINES:-500}
 
-WATCHDOG_LOG=/var/log/nrvous_watchdog.log
+WATCHDOG_LOG=/var/log/${PROJECT_NAME}_watchdog.log
+ECS_VERSION="8.11.0"
+SERVICE_NAME="${PROJECT_NAME}-watchdog"
+SERVICE_VERSION="1.0.0"
+ECS_LOGGING=${ECS_LOGGING:-1}
 
+# Minimal JSON string escape for log messages that only contain safe chars.
+# Backslash and double-quote are escaped just in case.
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# Emit a millisecond-precision UTC timestamp.
+_utc_timestamp() {
+    python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z")'
+}
+
+# Emit a log line to file and to syslog.
+# Usage: log <level> <message>
 log() {
-    msg="$(date '+%Y-%m-%d %H:%M:%S') $*"
-    logger -t "$LOG_TAG" "$*"
-    echo "$msg" >> "$WATCHDOG_LOG"
-    # Rotate tiny log in place to avoid unbounded growth.
+    level="$1"
+    shift
+    msg="$*"
+    if [ "$ECS_LOGGING" = "1" ]; then
+        ts=$(_utc_timestamp)
+        host=$(hostname)
+        pid=$$
+        escaped=$(json_escape "$msg")
+        line=$(printf '{"@timestamp":"%s","ecs.version":"%s","log.level":"%s","message":"%s","event.dataset":"%s.log","service.name":"%s","service.version":"%s","host.name":"%s","process.pid":%s}' \
+            "$ts" "$ECS_VERSION" "$level" "$escaped" "$SERVICE_NAME" "$SERVICE_NAME" "$SERVICE_VERSION" "$host" "$pid")
+    else
+        line="$(date '+%Y-%m-%d %H:%M:%S') [$level] $msg"
+    fi
+    logger -t "$LOG_TAG" "$line"
+    echo "$line" >> "$WATCHDOG_LOG"
+    # Rotate log in place to keep the most recent complete lines.
     if [ -f "$WATCHDOG_LOG" ]; then
-        sz=$(stat -c%s "$WATCHDOG_LOG" 2>/dev/null || echo 0)
-        if [ "$sz" -gt "$MAX_LOG_BYTES" ]; then
-            tail -c 16384 "$WATCHDOG_LOG" > "${WATCHDOG_LOG}.tmp" && mv "${WATCHDOG_LOG}.tmp" "$WATCHDOG_LOG"
+        lines=$(wc -l < "$WATCHDOG_LOG" 2>/dev/null || echo 0)
+        if [ "$lines" -gt "$MAX_LOG_LINES" ]; then
+            tail -n "$MAX_LOG_LINES" "$WATCHDOG_LOG" > "${WATCHDOG_LOG}.tmp" && mv "${WATCHDOG_LOG}.tmp" "$WATCHDOG_LOG"
         fi
     fi
 }
@@ -39,14 +69,14 @@ is_listening() {
 restart_service() {
     svc="$1"
     reason="$2"
-    log "RESTART $svc: $reason"
-    /etc/init.d/"$svc" restart >/dev/null 2>&1 || log "ERROR: $svc restart failed"
+    log info "RESTART $svc: $reason"
+    /etc/init.d/"$svc" restart >/dev/null 2>&1 || log error "restart failed: $svc"
 }
 
 # -----------------------------------------------------------------------------
 # Main loop
 # -----------------------------------------------------------------------------
-log "watchdog started (interval=${INTERVAL}s)"
+log info "watchdog started (interval=${INTERVAL}s)"
 
 while true; do
     # --- Camera stack ---------------------------------------------------------
@@ -92,10 +122,10 @@ while true; do
     fi
 
     # --- Status page ----------------------------------------------------------
-    if ! is_running "/usr/local/bin/nrvous_status_page.py"; then
-        restart_service nrvous_status_page "status page not running"
+    if ! is_running "/usr/local/bin/status_page.py"; then
+        restart_service status_page "status page not running"
     elif ! is_listening 8765; then
-        restart_service nrvous_status_page "status page port 8765 not listening"
+        restart_service status_page "status page port 8765 not listening"
     fi
 
     # --- nginx front door -----------------------------------------------------

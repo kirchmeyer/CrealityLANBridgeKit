@@ -32,6 +32,7 @@ start_service() {
         chmod +x /usr/bin/webrtc_local
     fi
     procd_open_instance webrtc_local_bridge
+    procd_set_param env PROJECT_NAME="%PROJECT_NAME%" ECS_LOGGING="%ECS_LOGGING%"
     procd_set_param command /usr/bin/webrtc_local
     procd_set_param stdout 1
     procd_set_param stderr 1

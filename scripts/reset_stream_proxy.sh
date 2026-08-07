@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST="${HOST:-192.168.1.100}"
-REMOTE_USER="${REMOTE_USER:-root}"
+HOST="${HOST:-${PRINTER_HOST:-192.168.1.100}}"
+REMOTE_USER="${REMOTE_USER:-${PRINTER_USER:-root}}"
 
 ssh -o BatchMode=yes -o StrictHostKeyChecking=no "${REMOTE_USER}@${HOST}" '
 set -e

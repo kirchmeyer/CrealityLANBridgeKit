@@ -49,7 +49,7 @@ Exact captured standby response:
 ```json
 {
   "TotalLayer": "",
-  "address": "3d.nrvous.io",
+  "address": "printer.lan",
   "autohome": 0,
   "bedTemp": 50.0,
   "bedTemp2": 50.0,
@@ -65,7 +65,7 @@ Exact captured standby response:
   "isLanPrinter": true,
   "lanCompatible": true,
   "layer": "",
-  "linuxVideoUrl": "http://3d.nrvous.io:8000/call/webrtc_local",
+  "linuxVideoUrl": "http://printer.lan:8000/call/webrtc_local",
   "localOnline": true,
   "mac": "A1B2C3D4E5F6",
   "mcu_is_print": 0,
@@ -205,7 +205,7 @@ Then add routes only when a specific app feature fails.
 
 ## 5. Camera / video
 
-The app requests video from `linuxVideoUrl`. In the captured contract this points to `http://3d.nrvous.io:8000/call/webrtc_local`. That path is already served by `printer/webrtc_local_bridge.py` (go2rtc adapter) and is outside the scope of the status backend.
+The app requests video from `linuxVideoUrl`. In the captured contract this points to `http://printer.lan:8000/call/webrtc_local`. That path is already served by `printer/webrtc_local_bridge.py` (go2rtc adapter) and is outside the scope of the status backend.
 
 ---
 

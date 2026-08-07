@@ -18,9 +18,9 @@ import sys
 from datetime import datetime, timezone
 
 APP_NAME = "Creality Print"
-DEFAULT_HOST = "192.168.1.100"
-DEFAULT_MAC = "A1B2C3D4E5F6"
-DEFAULT_MODEL = "F008"
+DEFAULT_HOST = os.environ.get("PRINTER_HOST", "192.168.1.100")
+DEFAULT_MAC = os.environ.get("PRINTER_MAC", "A1B2C3D4E5F6")
+DEFAULT_MODEL = os.environ.get("PRINTER_MODEL", "F008")
 
 
 def app_support_root():

@@ -10,12 +10,20 @@ PROG=/usr/local/bin/lan_bridge.py
 LOG=/var/log/lan_bridge.log
 
 start_service() {
+    # Ensure log file exists and is writable before starting.
+    touch "$LOG" 2>/dev/null || true
+
     procd_open_instance lan_bridge
-    procd_set_param env HOME=/root PUBLIC_HOST="${PUBLIC_HOST:-3d.nrvous.io}" PUBLIC_SCHEME="${PUBLIC_SCHEME:-http}" MOONRAKER_URL="${MOONRAKER_URL:-http://127.0.0.1:7125}" CFS_FLATTEN="${CFS_FLATTEN:-0}"
-    procd_set_param command /usr/bin/python3 "$PROG"
-    procd_set_param stdout 1
-    procd_set_param stderr 1
+    procd_set_param env HOME=/root PROJECT_NAME="%PROJECT_NAME%" PUBLIC_HOST="${PUBLIC_HOST:-%PUBLIC_HOST%}" PUBLIC_SCHEME="${PUBLIC_SCHEME:-http}" MOONRAKER_URL="${MOONRAKER_URL:-http://127.0.0.1:7125}" CFS_FLATTEN="${CFS_FLATTEN:-0}" ECS_LOGGING="${ECS_LOGGING:-%ECS_LOGGING%}"
+    # Redirect stdout/stderr to a persistent log file so the status page and
+    # post-mortem debugging have a stable source.
+    procd_set_param command /bin/sh -c "exec /usr/bin/python3 '$PROG' >> '$LOG' 2>&1"
+    # Bounded respawn: if the bridge crashes repeatedly, leave it down so
+    # logs/errors are visible rather than flapping.
     procd_set_param respawn
+    procd_set_param respawn_threshold 3600
+    procd_set_param respawn_timeout 5
+    procd_set_param respawn_retry 3
     procd_close_instance
 }
 

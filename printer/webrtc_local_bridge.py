@@ -17,11 +17,19 @@ app expects. No client patching required.
 """
 import base64
 import json
+import logging
 import os
+import socket
 import sys
+import traceback
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+ECS_VERSION = "8.11.0"
+PROJECT_NAME = os.environ.get("PROJECT_NAME", "bridge")
+SERVICE_NAME = f"{PROJECT_NAME}-webrtc-local-bridge"
 
 BIND = os.environ.get("WEBRTC_LOCAL_BIND", "0.0.0.0")
 PORT = int(os.environ.get("WEBRTC_LOCAL_PORT", "8000"))
@@ -29,9 +37,71 @@ GO2RTC_URL = os.environ.get("GO2RTC_URL", "http://127.0.0.1:1984/api/webrtc?src=
 DEBUG_LOG = os.environ.get("WEBRTC_BRIDGE_DEBUG_LOG", "/tmp/webrtc_local_bridge.log")
 
 
+class _EcsFormatter(logging.Formatter):
+    """Emit log records as Elastic Common Schema (ECS) JSON lines."""
+
+    def format(self, record):
+        ts = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        doc = {
+            "@timestamp": ts,
+            "ecs.version": ECS_VERSION,
+            "log.level": record.levelname.lower(),
+            "message": record.getMessage(),
+            "event.dataset": f"{SERVICE_NAME}.log",
+            "service.name": SERVICE_NAME,
+            "service.version": "1.0.0",
+            "host.name": socket.gethostname(),
+            "process.pid": record.process,
+            "process.thread.id": record.thread,
+        }
+        if record.exc_info:
+            exc_type, exc_value, exc_tb = record.exc_info
+            doc["error.type"] = exc_type.__name__ if exc_type else None
+            doc["error.message"] = str(exc_value) if exc_value else None
+            doc["error.stack_trace"] = "".join(traceback.format_exception(*record.exc_info)).strip() if exc_type else None
+        if hasattr(record, "ecs"):
+            doc.update(record.ecs)
+        return json.dumps(doc, separators=(",", ":"), default=str)
+
+
+def _configure_logging():
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(_EcsFormatter())
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers = [handler]
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        logging.getLogger().error("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+    sys.excepthook = _excepthook
+
+
+_configure_logging()
+logger = logging.getLogger(SERVICE_NAME)
+
+
+_ECS_DEBUG = os.environ.get("ECS_LOGGING", "1").strip().lower() not in ("0", "false", "off", "no")
+
+
+def _ecs_debug_doc(msg):
+    ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return {
+        "@timestamp": ts,
+        "ecs.version": ECS_VERSION,
+        "log.level": "debug",
+        "message": str(msg),
+        "event.dataset": f"{SERVICE_NAME}.debug",
+        "service.name": SERVICE_NAME,
+        "service.version": "1.0.0",
+        "host.name": socket.gethostname(),
+        "process.pid": os.getpid(),
+    }
+
+
 def debug(msg):
-    line = f"{msg}"
+    """Append a debug trace line to DEBUG_LOG (ECS JSON by default)."""
     try:
+        line = json.dumps(_ecs_debug_doc(msg), separators=(",", ":"), default=str) if _ECS_DEBUG else str(msg)
         with open(DEBUG_LOG, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
     except Exception:
@@ -98,8 +168,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             answer = self._forward_to_go2rtc(offer)
-        except Exception as exc:
-            debug(f"forward error: {exc}")
+        except Exception:
+            logger.exception("Failed to forward WebRTC offer")
             self._send_text("{}")
             return
 
@@ -183,11 +253,16 @@ class ReuseAddrServer(HTTPServer):
 
 def main():
     server = ReuseAddrServer((BIND, PORT), BridgeHandler)
-    debug(f"webrtc_local_bridge listening on {BIND}:{PORT} -> {GO2RTC_URL}")
+    logger.info(
+        "WebRTC local bridge listening",
+        extra={"ecs": {"server.address": BIND, "server.port": PORT, "url.full": GO2RTC_URL}},
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        pass
+        logger.info("Shutting down on keyboard interrupt")
+    except Exception:
+        logger.exception("Server crashed")
     finally:
         server.server_close()
 

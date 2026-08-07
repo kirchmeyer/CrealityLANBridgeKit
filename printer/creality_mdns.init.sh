@@ -14,7 +14,7 @@ PROG=/usr/local/bin/creality_mdns_announcer.py
 start_service() {
     procd_open_instance
     procd_set_param command /usr/bin/python3 $PROG
-    procd_set_param env MDNS_SERVICE_PORT=80
+    procd_set_param env PROJECT_NAME="%PROJECT_NAME%" MDNS_SERVICE_PORT=80 ECS_LOGGING="%ECS_LOGGING%"
     procd_set_param stdout 1
     procd_set_param stderr 1
     procd_set_param respawn

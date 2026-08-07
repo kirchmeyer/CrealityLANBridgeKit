@@ -98,7 +98,7 @@ Open design questions:
    - Clear cache, add by IP, confirm idle state and live temps.
    - Start a print job, confirm state changes to Printing and progress updates.
 3. Fluidd check:
-   - Open `https://3d.nrvous.io` and confirm full Moonraker/Fluidd UI works.
+   - Open `https://printer.lan` and confirm full Moonraker/Fluidd UI works.
 4. Cloud check (if applicable):
    - Verify stock cloud services can still register/heartbeat.
 

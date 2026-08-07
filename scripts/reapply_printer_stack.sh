@@ -2,12 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HOST="${HOST:-192.168.1.100}"
+HOST="${HOST:-${PRINTER_HOST:-192.168.1.100}}"
 PORT="${PORT:-80}"
-REMOTE_USER="${REMOTE_USER:-root}"
+REMOTE_USER="${REMOTE_USER:-${PRINTER_USER:-root}}"
 
-if [[ ! -x "$ROOT_DIR/printer/deploy_lan_bridge.sh" ]]; then
-  echo "Missing deploy script: $ROOT_DIR/printer/deploy_lan_bridge.sh"
+if [[ ! -x "$ROOT_DIR/install.sh" ]]; then
+  echo "Missing install script: $ROOT_DIR/install.sh"
   exit 1
 fi
 
@@ -17,7 +17,7 @@ if [[ ! -f "$ROOT_DIR/scripts/endpoint_contract_check.py" ]]; then
 fi
 
 echo "[reapply] Deploying printer-side LAN bridge + camera stack to ${REMOTE_USER}@${HOST}"
-"$ROOT_DIR/printer/deploy_lan_bridge.sh" "${REMOTE_USER}@${HOST}"
+"$ROOT_DIR/install.sh" install "$HOST" "$REMOTE_USER"
 
 echo
 

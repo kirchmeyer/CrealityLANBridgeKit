@@ -22,6 +22,8 @@ start_service() {
     fi
     procd_open_instance mjpeg_server
     procd_set_param env HOME=/root \
+        PROJECT_NAME="%PROJECT_NAME%" \
+        ECS_LOGGING="%ECS_LOGGING%" \
         MJPEG_BIND="${MJPEG_BIND:-127.0.0.1}" \
         MJPEG_PORT="${MJPEG_PORT:-8081}" \
         MJPEG_SOURCE="${MJPEG_SOURCE:-rtsp://127.0.0.1:8554/camera}" \

@@ -30,6 +30,7 @@ start_service() {
     procd_open_instance go2rtc
     # Do NOT background here. The script execs go2rtc, which becomes the
     # long-running process that procd supervises.
+    procd_set_param env PROJECT_NAME="%PROJECT_NAME%" ECS_LOGGING="%ECS_LOGGING%"
     procd_set_param command "$RESTART"
     procd_set_param stdout 1
     procd_set_param stderr 1

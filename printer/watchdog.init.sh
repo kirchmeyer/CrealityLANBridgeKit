@@ -1,5 +1,5 @@
 #!/bin/sh /etc/rc.common
-# OpenWrt procd init for a small custom watchdog for the nrvous bridge stack.
+# OpenWrt procd init for a small custom watchdog for the bridge stack.
 #
 # This is NOT a replacement for per-service procd respawn; it is a safety net
 # for processes that are hard to supervise as a single unit (camera stack
@@ -15,12 +15,12 @@ STOP=05
 USE_PROCD=1
 DEPEND=fstab
 
-PROG=/usr/local/bin/nrvous_watchdog.sh
+PROG=/usr/local/bin/watchdog.sh
 
 start_service() {
-    [ -x "$PROG" ] || { logger -t nrvous_watchdog "missing $PROG"; return 1; }
-    procd_open_instance nrvous_watchdog
-    procd_set_param env HOME=/root PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+    [ -x "$PROG" ] || { logger -t %PROJECT_NAME%_watchdog "missing $PROG"; return 1; }
+    procd_open_instance watchdog
+    procd_set_param env HOME=/root PATH="/usr/sbin:/usr/bin:/sbin:/bin" PROJECT_NAME="%PROJECT_NAME%" ECS_LOGGING="%ECS_LOGGING%"
     procd_set_param command /bin/sh "$PROG"
     procd_set_param stdout 1
     procd_set_param stderr 1

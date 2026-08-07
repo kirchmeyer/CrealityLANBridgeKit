@@ -57,8 +57,8 @@ def check(url: str, host_header: str = None, insecure: bool = False) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="Test webrtc_local frontdoor")
-    parser.add_argument("--host", default="192.168.1.100")
-    parser.add_argument("--domain", default="3d.nrvous.io")
+    parser.add_argument("--host", default=os.environ.get("PRINTER_HOST", "192.168.1.100"))
+    parser.add_argument("--domain", default=os.environ.get("PUBLIC_HOST", "printer.lan"))
     parser.add_argument("--insecure", action="store_true", help="Skip TLS verification for HTTPS test")
     args = parser.parse_args()
 

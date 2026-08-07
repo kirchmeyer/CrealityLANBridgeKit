@@ -13,3 +13,27 @@ snapshots/**
 
 # Local build artifacts
 *.log
+.install-staging/
+*.bak
+
+# Local certificates and secrets
+certs/
+*.key
+*.crt
+*.pem
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test artifacts
+tests/__pycache__/
+.pytest_cache/
+coverage/
+
+# OS metadata
+.DS_Store
+Thumbs.db

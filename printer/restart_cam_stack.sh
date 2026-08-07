@@ -1,6 +1,36 @@
 #!/bin/sh
 set -u
-log() { echo "[$(date +%H:%M:%S)] $*"; }
+
+ECS_VERSION="8.11.0"
+PROJECT_NAME="${PROJECT_NAME:-bridge}"
+SERVICE_NAME="${PROJECT_NAME}-cam-stack"
+ECS_LOGGING=${ECS_LOGGING:-1}
+
+# Minimal JSON string escape for log messages that only contain safe chars.
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+_utc_timestamp() {
+    python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z")'
+}
+
+# Emit a log line to stdout (captured by procd).
+log() {
+    level="$1"
+    shift
+    msg="$*"
+    if [ "$ECS_LOGGING" = "1" ]; then
+        ts=$(_utc_timestamp)
+        host=$(hostname)
+        pid=$$
+        escaped=$(json_escape "$msg")
+        printf '{"@timestamp":"%s","ecs.version":"%s","log.level":"%s","message":"%s","event.dataset":"%s.log","service.name":"%s","service.version":"%s","host.name":"%s","process.pid":%s}\n' \
+            "$ts" "$ECS_VERSION" "$level" "$escaped" "$SERVICE_NAME" "$SERVICE_NAME" "1.0.0" "$host" "$pid"
+    else
+        printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$level" "$msg"
+    fi
+}
 
 # Avoid flock entirely: on this system a stale lock held by a crashed/zombified
 # parent can never be released, causing every subsequent restart to hang. Use a
@@ -13,7 +43,7 @@ trap cleanup_lock EXIT
 if [ -f "$LOCKFILE" ]; then
     oldpid=$(cat "$LOCKFILE" 2>/dev/null) || oldpid=""
     if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
-        log "another restart (pid=$oldpid) is active; waiting for it"
+        log info "another restart (pid=$oldpid) is active; waiting for it"
         for _ in $(seq 1 60); do
             if ! kill -0 "$oldpid" 2>/dev/null; then
                 break
@@ -21,7 +51,7 @@ if [ -f "$LOCKFILE" ]; then
             sleep 1
         done
         if kill -0 "$oldpid" 2>/dev/null; then
-            log "ERROR: timeout waiting for pid $oldpid"
+            log error "timeout waiting for pid $oldpid"
             exit 1
         fi
     fi
@@ -93,10 +123,10 @@ _kill_by_name() {
 # Stop / clean
 # ---------------------------------------------------------------------------
 
-log "stop stock cloud webrtc service"
+log info "stop stock cloud webrtc service"
 /etc/init.d/webrtc stop 2>/dev/null || true
 
-log "kill camera processes"
+log info "kill camera processes"
 # Do NOT kill webrtc_local / webrtc_local_bridge (Creality Print LAN camera on port 8000).
 # Do NOT killall python3 -- that would also kill moonraker.
 # Kill by name first, then by full command pattern, and wait for them to die.
@@ -119,7 +149,7 @@ rm -f /tmp/lock/procd_go2rtc.lock
 # Start
 # ---------------------------------------------------------------------------
 
-log "start cam_app"
+log info "start cam_app"
 /usr/bin/cam_app -i /dev/video0 -t main_cam >/tmp/cam_app_solo.log 2>&1 &
 CAM_PID=$!
 
@@ -131,13 +161,13 @@ for _ in $(seq 1 20); do
     sleep 0.5
 done
 if ! [ -S /tmp/delivery_socket100 ]; then
-    log "ERROR: delivery socket not created"
+    log error "delivery socket not created"
     cat /tmp/cam_app_solo.log
     exit 1
 fi
-log "cam_app pid=$CAM_PID socket ok"
+log info "cam_app pid=$CAM_PID socket ok"
 
-log "start delivery bridge (cloud + LAN FIFOs)"
+log info "start delivery bridge (cloud + LAN FIFOs)"
 /usr/bin/python3 /usr/local/bin/cam_delivery_bridge.py >/tmp/cam_delivery_bridge.log 2>&1 &
 BRIDGE_PID=$!
 
@@ -149,32 +179,32 @@ for _ in $(seq 1 10); do
     sleep 0.5
 done
 if ! [ -p /tmp/go2rtc_cam.fifo ]; then
-    log "ERROR: LAN FIFO not created"
+    log error "LAN FIFO not created"
     exit 1
 fi
 if ! [ -p /tmp/uvc_fifo ]; then
-    log "ERROR: cloud FIFO not created"
+    log error "cloud FIFO not created"
     exit 1
 fi
-log "delivery bridge pid=$BRIDGE_PID fifos ok"
+log info "delivery bridge pid=$BRIDGE_PID fifos ok"
 
-log "start mjpeg_server"
+log info "start mjpeg_server"
 /usr/bin/python3 /usr/local/bin/mjpeg_server.py >/tmp/mjpeg_server_solo.log 2>&1 &
 MJPEG_PID=$!
 sleep 1
 if ! kill -0 "$MJPEG_PID" 2>/dev/null; then
-    log "ERROR: mjpeg_server exited early"
+    log error "mjpeg_server exited early"
     cat /tmp/mjpeg_server_solo.log
     exit 1
 fi
-log "mjpeg_server pid=$MJPEG_PID"
+log info "mjpeg_server pid=$MJPEG_PID"
 
-log "start stock cloud webrtc via procd"
+log info "start stock cloud webrtc via procd"
 # Keep the stock init disabled at boot so our go2rtc init controls startup order,
 # but start it now so app-server can signal it when a cloud camera is requested.
 /etc/init.d/webrtc start || true
 
-log "exec go2rtc (procd will track this process)"
+log info "exec go2rtc (procd will track this process)"
 # Replace this script with go2rtc so procd sees the real daemon and can respawn
 # it if it crashes. A respawn will re-run this whole script, giving us a clean
 # restart.

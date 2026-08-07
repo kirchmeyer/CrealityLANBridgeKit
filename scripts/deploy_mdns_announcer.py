@@ -151,8 +151,8 @@ def deploy(host: str, user: str, port: int) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="Deploy mDNS announcer to the printer")
-    parser.add_argument("--host", default=os.environ.get("HOST", "192.168.1.100"),
-                        help="Printer hostname/IP (default: $HOST or 192.168.1.100)")
+    parser.add_argument("--host", default=os.environ.get("PRINTER_HOST", "192.168.1.100"),
+                        help="Printer hostname/IP (default: $PRINTER_HOST or 192.168.1.100)")
     parser.add_argument("--port", type=int, default=None,
                         help="mDNS port (auto-detected from printer if not specified)")
     args = parser.parse_args()

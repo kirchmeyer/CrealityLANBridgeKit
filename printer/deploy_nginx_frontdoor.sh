@@ -1,13 +1,14 @@
 #!/bin/sh
 set -e
 
-HOST=${1:-root@192.168.1.100}
-CONF_SRC=printer/nginx.nrvous.conf
+HOST=${1:-${PRINTER_HOST:-root@192.168.1.100}}
+CERT_BASENAME=${CERT_BASENAME:-self-signed}
+CONF_SRC=printer/nginx.frontdoor.conf
 LOCATIONS_SRC=printer/creality.lan.locations.conf
 WS_SRC=printer/creality.lan.websocket.conf
 ECS_LOG_SRC=printer/nginx.ecs-log-format.conf
 LAN_BRIDGE_INIT_SRC=printer/lan_bridge.init.sh
-STATUS_INIT_SRC=printer/nrvous_status_page.init.sh
+STATUS_INIT_SRC=printer/status_page.init.sh
 
 echo "==> Installing nginx front-door config to $HOST"
 python3 scripts/pyput.py "$CONF_SRC" "${HOST}:/etc/nginx/nginx.conf"
@@ -15,12 +16,12 @@ python3 scripts/pyput.py "$LOCATIONS_SRC" "${HOST}:/etc/nginx/conf.d/creality.la
 python3 scripts/pyput.py "$WS_SRC" "${HOST}:/etc/nginx/conf.d/creality.lan.websocket.conf"
 python3 scripts/pyput.py "$ECS_LOG_SRC" "${HOST}:/etc/nginx/conf.d/ecs-log-format.conf"
 python3 scripts/pyput.py "$LAN_BRIDGE_INIT_SRC" "${HOST}:/etc/init.d/lan_bridge"
-python3 scripts/pyput.py "$STATUS_INIT_SRC" "${HOST}:/etc/init.d/nrvous_status_page"
+python3 scripts/pyput.py "$STATUS_INIT_SRC" "${HOST}:/etc/init.d/status_page"
 
 ssh "$HOST" '
     mkdir -p /etc/nginx/conf.d
-    if [ ! -f /etc/nginx/conf.d/nrvous.io.crt ] || [ ! -f /etc/nginx/conf.d/nrvous.io.key ]; then
-        echo "ERROR: nrvous.io.crt or nrvous.io.key missing in /etc/nginx/conf.d/"
+    if [ ! -f /etc/nginx/conf.d/${CERT_BASENAME}.crt ] || [ ! -f /etc/nginx/conf.d/${CERT_BASENAME}.key ]; then
+        echo "ERROR: ${CERT_BASENAME}.crt or ${CERT_BASENAME}.key missing in /etc/nginx/conf.d/"
         exit 1
     fi
 
@@ -39,15 +40,15 @@ ssh "$HOST" '
 
     # Ensure the LAN bridge and status page are installed, enabled, and running.
     # Disable the old probe backend if it is still present.
-    chmod +x /etc/init.d/lan_bridge /etc/init.d/nrvous_status_page 2>/dev/null || true
+    chmod +x /etc/init.d/lan_bridge /etc/init.d/status_page 2>/dev/null || true
     if [ -f /etc/init.d/probe_backend ]; then
         /etc/init.d/probe_backend stop 2>/dev/null || true
         /etc/init.d/probe_backend disable 2>/dev/null || true
     fi
     /etc/init.d/lan_bridge enable 2>/dev/null || true
     /etc/init.d/lan_bridge restart 2>/dev/null || true
-    /etc/init.d/nrvous_status_page enable 2>/dev/null || true
-    /etc/init.d/nrvous_status_page restart 2>/dev/null || true
+    /etc/init.d/status_page enable 2>/dev/null || true
+    /etc/init.d/status_page restart 2>/dev/null || true
     sleep 1
 
     echo "==> Listeners after switch:"
