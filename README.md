@@ -300,6 +300,10 @@ See [SECURITY.md](SECURITY.md) for how to report vulnerabilities and the assumpt
 - Clearing the local app cache is often necessary after a significant backend change because the app can keep stale device state.
 - Keep the compatibility logic focused on contract matching and route normalization; broad nginx changes can become hard to reason about.
 
+## Third-party software
+
+- [go2rtc](https://github.com/AlexxIT/go2rtc) is used for camera streaming and RTSP/WebRTC bridging. go2rtc is licensed under the [MIT License](https://github.com/AlexxIT/go2rtc/blob/master/LICENSE).
+
 ## Known issues and remaining friction
 
 - The compatibility backend is now aligned with the main app-facing contract, but the stock app can still appear inconsistent until the local cache is cleared and the printer is re-queried.
