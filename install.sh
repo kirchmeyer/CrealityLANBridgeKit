@@ -314,8 +314,9 @@ install_services() {
             /etc/init.d/webrtc disable 2>/dev/null || true
         fi
 
-        # Disable legacy nrvous-named services if migrating from an older install.
-        for legacy in nrvous_status_page nrvous_watchdog; do
+        # Disable legacy example-named services if migrating from an older install.
+        # These names are just one possible value of PROJECT_NAME from a prior install.
+        for legacy in example_status_page example_watchdog; do
             if [ -f /etc/init.d/$legacy ]; then
                 /etc/init.d/$legacy stop 2>/dev/null || true
                 /etc/init.d/$legacy disable 2>/dev/null || true
@@ -396,11 +397,12 @@ remove_our_files() {
               /etc/nginx/conf.d/creality.lan.websocket.conf \
               /etc/nginx/conf.d/ecs-log-format.conf
 
-        # Legacy nrvous-named files from older installs.
-        rm -f /usr/local/bin/nrvous_status_page.py \
-              /usr/local/bin/nrvous_watchdog.sh \
-              /etc/init.d/nrvous_status_page \
-              /etc/init.d/nrvous_watchdog
+        # Legacy example-named files from older installs.
+        # These names are just one possible value of PROJECT_NAME from a prior install.
+        rm -f /usr/local/bin/example_status_page.py \
+              /usr/local/bin/example_watchdog.sh \
+              /etc/init.d/example_status_page \
+              /etc/init.d/example_watchdog
     '
 }
 
