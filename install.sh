@@ -55,7 +55,11 @@ apply_derived_paths
 OUR_SERVICES=(lan_bridge go2rtc status_page creality_mdns webrtc_local_bridge watchdog)
 STOCK_SERVICES_TO_DISABLE=(app mjpeg_server)
 
+SSH_KEY="${SSH_KEY:-}"
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10)
+if [[ -n "$SSH_KEY" ]]; then
+    SSH_OPTS+=( -o "IdentityFile=${SSH_KEY}" )
+fi
 
 usage() {
     cat <<EOF
@@ -88,6 +92,7 @@ Environment defaults:
   PROJECT_NAME (default: bridge)
   STATUS_PATH (default: \$PROJECT_NAME-status)
   LAN_MODE (default: open)
+  SSH_KEY (default: unset; set to an explicit private key path if needed)
 EOF
 }
 

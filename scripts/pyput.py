@@ -10,10 +10,16 @@ import subprocess
 import sys
 
 
+SSH_KEY = os.environ.get("SSH_KEY", "")
+
+
 def ssh_cmd(user_host, remote_command, stdin=None, capture_stdout=False):
     user, _, host = user_host.partition("@")
     target = f"{user}@{host}" if user else host
-    cmd = ["ssh", target, remote_command]
+    cmd = ["ssh"]
+    if SSH_KEY:
+        cmd.extend(["-o", f"IdentityFile={SSH_KEY}"])
+    cmd.extend([target, remote_command])
     kwargs = {}
     if stdin is not None:
         kwargs["input"] = stdin

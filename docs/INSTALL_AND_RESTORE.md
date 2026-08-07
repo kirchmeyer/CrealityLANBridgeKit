@@ -187,8 +187,11 @@ Then add the printer in Creality Print as `http://127.0.0.1`. The proxy listens 
 ./install.sh status
 
 # Open the operational status page
-open "http://${PUBLIC_HOST}/${STATUS_PATH}/"
-
+open "https://${PUBLIC_HOST}/${STATUS_PATH}/"
+# LED control via simple REST (useful for Homebridge / Home Assistant)
+curl -sk "https://${PUBLIC_HOST}/${STATUS_PATH}/api/light/simple"
+curl -sk "https://${PUBLIC_HOST}/${STATUS_PATH}/api/light/set?state=on"
+curl -sk "https://${PUBLIC_HOST}/${STATUS_PATH}/api/light/set?state=off"
 # Inspect the live CFS/AMS payload
 ssh root@192.168.1.100 'python3 - <<"PY"
 import sys, json
@@ -225,8 +228,14 @@ ssh root@192.168.1.100 '
 ### Re-apply from repo
 
 ```bash
+# Full reinstall (backup, deploy, enable, restart)
 ./install.sh install 192.168.1.100 root
+
+# Just push changed files and restart services
+./install.sh sync 192.168.1.100 root
 ```
+
+`sync` only re-stages config templates, pushes files that differ, sets permissions, and restarts the bridge services.
 
 ### Desktop app acting stale
 

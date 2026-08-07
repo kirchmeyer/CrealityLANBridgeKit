@@ -28,6 +28,7 @@ import subprocess
 import sys
 import threading
 import traceback
+import urllib.parse
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -46,6 +47,7 @@ BIND = os.environ.get("STATUS_BIND", "127.0.0.1")
 LIGHT_ON_GCODE = os.environ.get("LIGHT_ON_GCODE", "SET_PIN PIN=LED VALUE=1")
 LIGHT_OFF_GCODE = os.environ.get("LIGHT_OFF_GCODE", "SET_PIN PIN=LED VALUE=0")
 LIGHT_MOONRAKER_URL = os.environ.get("LIGHT_MOONRAKER_URL", "http://127.0.0.1:7125")
+LIGHT_QUERY_OBJECT = os.environ.get("LIGHT_QUERY_OBJECT", "output_pin LED")
 
 
 class _EcsFormatter(logging.Formatter):
@@ -225,22 +227,46 @@ _quick_cache = {"data": None, "expires": 0.0, "ttl": 5.0}
 _light_state = {"state": "unknown", "since": datetime.now(timezone.utc).isoformat()}
 
 
+def _query_light_state():
+    """Read the actual LED output_pin value from Moonraker and update _light_state."""
+    import urllib.request
+    url = f"{LIGHT_MOONRAKER_URL}/printer/objects/query?{urllib.parse.quote(LIGHT_QUERY_OBJECT)}"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            payload = json.loads(r.read().decode("utf-8"))
+        result = payload.get("result", {})
+        status = result.get("status", {})
+        pin_obj = status.get(LIGHT_QUERY_OBJECT, {})
+        value = float(pin_obj.get("value", 0.0) if isinstance(pin_obj, dict) else 0.0)
+        _light_state["state"] = "on" if value > 0.01 else "off"
+        _light_state["since"] = datetime.now(timezone.utc).isoformat()
+        return True
+    except Exception:
+        return False
+
+
 def _set_light(state):
     """Send a light on/off command through Moonraker's gcode/script endpoint.
 
     Returns (ok, detail). state must be "on" or "off".
     """
     import urllib.request
-    import urllib.parse
     gcode = LIGHT_ON_GCODE if state == "on" else LIGHT_OFF_GCODE
     url = f"{LIGHT_MOONRAKER_URL}/printer/gcode/script"
-    body = urllib.parse.urlencode({"script": gcode}).encode()
+    body = json.dumps({"script": gcode}).encode("utf-8")
     try:
-        req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/x-www-form-urlencoded"})
-        with urllib.request.urlopen(req, timeout=5) as r:
+        req = urllib.request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
             _ = r.read()
-        _light_state["state"] = state
-        _light_state["since"] = datetime.now(timezone.utc).isoformat()
+        # Best-effort re-read the real hardware state; don't fail the toggle if
+        # the query fails.
+        _query_light_state()
         return True, f"sent {gcode}"
     except Exception as exc:
         return False, str(exc)
@@ -355,12 +381,21 @@ HTML_TEMPLATE = """<!doctype html>
 body {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background:#0d1117; color:#c9d1d9; margin:0; padding:2rem; line-height:1.5; }}
 h1 {{ color:#58a6ff; margin-bottom:.25rem; }}
 .sub {{ color:#8b949e; margin-bottom:1.5rem; }}
-.grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:1rem; align-items: start; }}
-.card {{ background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem; min-width:0; overflow:auto; }}
-.card h2 {{ margin:0 0 .75rem; font-size:1rem; color:#79c0ff; }}
+.grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:1rem; align-items: stretch; }}
+.card {{ background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem; min-width:0; overflow:hidden; display:flex; flex-direction:column; }}
+.card h2 {{ margin:0 0 .75rem; font-size:1rem; color:#79c0ff; flex-shrink:0; }}
 table {{ width:100%; border-collapse: collapse; table-layout: fixed; }}
-th, td {{ text-align:left; padding:.35rem .5rem; overflow-wrap:anywhere; word-break:break-word; vertical-align: middle; }}
+th, td {{ text-align:left; padding:.4rem .5rem; overflow-wrap:anywhere; word-break:break-word; vertical-align: middle; }}
 th {{ color:#8b949e; font-weight:normal; border-bottom:1px solid #30363d; }}
+td {{ border-bottom:1px solid #21262d; }}
+tr:last-child td {{ border-bottom:none; }}
+.services td:nth-child(1), .services th:nth-child(1) {{ width: 100%; }}
+.services td:nth-child(2), .services th:nth-child(2),
+.services td:nth-child(3), .services th:nth-child(3) {{ width: 1%; white-space: nowrap; }}
+.listeners td:nth-child(1), .listeners th:nth-child(1) {{ width: 100%; }}
+.listeners td:nth-child(2), .listeners th:nth-child(2) {{ width: 1%; white-space: nowrap; }}
+.quick-checks td:nth-child(1), .quick-checks th:nth-child(1) {{ width: 1%; white-space: nowrap; }}
+.quick-checks td:nth-child(2), .quick-checks th:nth-child(2) {{ width: 100%; }}
 .badge {{ display:inline-block; padding:.15rem .5rem; border-radius:999px; font-size:.75rem; font-weight:bold; white-space:nowrap; }}
 .ok {{ background:#238636; color:#fff; }}
 .fail {{ background:#da3633; color:#fff; }}
@@ -379,21 +414,21 @@ pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:
 <div class="grid">
   <div class="card">
     <h2>Services</h2>
-    <table>
+    <table class="services">
       <tr><th>Name</th><th>Enabled</th><th>Running</th></tr>
       {services_rows}
     </table>
   </div>
   <div class="card">
     <h2>Listeners</h2>
-    <table>
+    <table class="listeners">
       <tr><th>Port</th><th>State</th></tr>
       {listeners_rows}
     </table>
   </div>
   <div class="card" style="grid-column: 1 / -1;">
     <h2>Quick checks</h2>
-    <table>
+    <table class="quick-checks">
       <tr><td>HTTP /camera.mjpeg</td><td>{camera_mjpeg_http}</td></tr>
       <tr><td>HTTP /webcam/cam.jpg</td><td>{webcam_cam_jpg_http}</td></tr>
       <tr><td>HTTP /webcam/stream.mjpg</td><td>{webcam_stream_http}</td></tr>
@@ -413,6 +448,7 @@ pre {{ background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:
       <button class="btn" id="light-off" onclick="setLight('off')">Light off</button>
     </p>
     <p id="light-detail" class="note"></p>
+    <p class="note">Simple REST: <code>GET /{status_path}/api/light/simple</code> returns <code>on</code>/<code>off</code>/<code>unknown</code>. <code>GET /{status_path}/api/light/set?state=on</code> toggles it. Homebridge example in docs.</p>
   </div>
   <div class="card">
     <h2>lan_bridge log tail</h2>
@@ -664,6 +700,7 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(json.dumps(obj, indent=2).encode())
 
@@ -673,19 +710,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body.encode())
 
+    def _text(self, body):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body.encode())
+
     def _read_post_body(self):
         length = int(self.headers.get("Content-Length", "0"))
         return self.rfile.read(length).decode() if length > 0 else ""
 
     def do_POST(self):
         status_prefix = f"/{STATUS_PATH}"
-        if self.path == f"{status_prefix}/api/light":
+        if self.path.startswith(f"{status_prefix}/api/light"):
             body = self._read_post_body()
-            state = ""
-            for part in body.split("&"):
-                if part.startswith("state="):
-                    state = part.split("=", 1)[1]
-                    break
+            content_type = self.headers.get("Content-Type", "")
+            state = None
+            if "application/json" in content_type:
+                try:
+                    state = json.loads(body).get("state")
+                except Exception:
+                    pass
+            if state is None:
+                for part in body.split("&"):
+                    if part.startswith("state="):
+                        state = urllib.parse.unquote(part.split("=", 1)[1])
+                        break
             if state not in ("on", "off"):
                 self.send_error(400, f"invalid state {state!r}; use on or off")
                 return
@@ -696,13 +747,30 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         status_prefix = f"/{STATUS_PATH}"
-        if self.path == f"{status_prefix}/api/light":
+        path_only = self.path.split("?", 1)[0]
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
+
+        if path_only == f"{status_prefix}/api/light":
+            _query_light_state()
             self._json({"state": _light_state["state"], "since": _light_state["since"]})
             return
-        if self.path == f"{status_prefix}/api/status.json":
+        if path_only == f"{status_prefix}/api/light/simple":
+            _query_light_state()
+            self._text(_light_state["state"])
+            return
+        if path_only == f"{status_prefix}/api/light/set":
+            params = urllib.parse.parse_qs(query)
+            state = params.get("state", [None])[0]
+            if state not in ("on", "off"):
+                self.send_error(400, "invalid state; use ?state=on or ?state=off")
+                return
+            ok, detail = _set_light(state)
+            self._json({"ok": ok, "state": _light_state["state"], "detail": detail})
+            return
+        if path_only == f"{status_prefix}/api/status.json":
             self._json(collect_status())
             return
-        if self.path in (f"{status_prefix}/", status_prefix):
+        if path_only in (f"{status_prefix}/", status_prefix):
             # Collect service/listener state and probe public endpoints in
             # parallel; the slowest path should dominate, not the sum.
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
@@ -761,6 +829,7 @@ class Handler(BaseHTTPRequestHandler):
                 bind=BIND,
                 port=PORT,
                 project_name=PROJECT_NAME,
+                status_path=STATUS_PATH,
             )
             self._html(html)
             return
@@ -779,6 +848,10 @@ def main():
             collect_status()
         except Exception:
             logger.warning("Cache warm-up failed", exc_info=True)
+        try:
+            _query_light_state()
+        except Exception:
+            logger.warning("Light state warm-up failed", exc_info=True)
     threading.Thread(target=_warm, daemon=True).start()
     server = ReuseAddrThreadingHTTPServer((BIND, PORT), Handler)
     logger.info(f"{PROJECT_NAME} status page listening on http://{BIND}:{PORT}/{STATUS_PATH}/")

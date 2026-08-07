@@ -29,7 +29,7 @@ Printer-specific context:
 - LAN bridge backend bind: 127.0.0.1:9002 (WebSocket fronted by nginx on 9999)
 - Moonraker upstream: http://127.0.0.1:7126
 - Public host used by the app-facing flow: read from `$PUBLIC_HOST` (live testing default: printer.lan).
-- Operational status page: `http://$PUBLIC_HOST/$STATUS_PATH/`
+- Operational status page: `https://$PUBLIC_HOST/$STATUS_PATH/`
 - Backup manifest on printer: /etc/${PROJECT_NAME}_backup_manifest.json
 - Useful logs: /var/log/nginx/access.log, /var/log/nginx/upload-access.log, /var/log/lan_bridge.log, /var/log/${PROJECT_NAME}_watchdog.log, logread, /tmp/cam_app_solo.log, /tmp/cam_delivery_bridge.log, /tmp/mjpeg_server_solo.log, /tmp/go2rtc_solo.log
 - All service logs are ECS-compliant JSON lines by default; set `ECS_LOGGING=0` for plain text.

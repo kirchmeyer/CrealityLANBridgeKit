@@ -57,10 +57,24 @@ class Diff:
     status: str  # "match", "missing_remote", "missing_local", "mismatch"
 
 
+SSH_KEY = os.environ.get("SSH_KEY", "")
+
+
+def _ssh_base() -> list[str]:
+    cmd = [
+        "ssh",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=no",
+    ]
+    if SSH_KEY:
+        cmd.extend(["-o", f"IdentityFile={SSH_KEY}"])
+    return cmd
+
+
 def _run_ssh(host: str, user: str, cmd: str) -> subprocess.CompletedProcess:
     target = f"{user}@{host}"
     return subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", target, cmd],
+        _ssh_base() + [target, cmd],
         capture_output=True,
         text=True,
     )
@@ -104,8 +118,17 @@ def _remote_digests(host: str, user: str, remote_paths: list[str]) -> dict[str, 
 
 def _sync_file(host: str, user: str, local_path: str, remote_path: str) -> bool:
     target = f"{user}@{host}:{remote_path}"
+    scp_cmd = [
+        "scp",
+        "-O",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=no",
+    ]
+    if SSH_KEY:
+        scp_cmd.extend(["-o", f"IdentityFile={SSH_KEY}"])
+    scp_cmd.extend([local_path, target])
     result = subprocess.run(
-        ["scp", "-O", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", local_path, target],
+        scp_cmd,
         capture_output=True,
         text=True,
     )

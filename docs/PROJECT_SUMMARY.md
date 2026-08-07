@@ -60,7 +60,7 @@ Live testing values:
 - LAN bridge backend bind: `127.0.0.1:9002` (WebSocket fronted by nginx on 9999)
 - Moonraker upstream: `http://127.0.0.1:7126`
 - Public host used by the app flow: `printer.lan`
-- Operational status page: `http://${PUBLIC_HOST}/${STATUS_PATH}/`
+- Operational status page: `https://${PUBLIC_HOST}/${STATUS_PATH}/`
 - Backup manifest on printer: `/etc/${PROJECT_NAME}_backup_manifest.json`
 - Camera debug logs: `/tmp/cam_app_solo.log`, `/tmp/cam_delivery_bridge.log`, `/tmp/mjpeg_server_solo.log`, `/tmp/go2rtc_solo.log`
 - Service logs: `/var/log/lan_bridge.log`, `/var/log/${PROJECT_NAME}_watchdog.log`, `/var/log/nginx/access.log`

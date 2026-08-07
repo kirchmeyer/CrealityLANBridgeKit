@@ -54,7 +54,7 @@ Live testing example values:
 - LAN bridge backend: `http://127.0.0.1:9002` (WebSocket fronted by nginx on 9999)
 - Moonraker upstream: `http://127.0.0.1:7126`
 - Public host used by the app flow: `printer.lan`
-- Status page: `http://${PUBLIC_HOST}/${STATUS_PATH}/`
+- Status page: `https://${PUBLIC_HOST}/${STATUS_PATH}/` (also available over plain HTTP in `open` LAN mode)
 - Camera debug logs: `/tmp/cam_app_solo.log`, `/tmp/cam_delivery_bridge.log`, `/tmp/mjpeg_server_solo.log`, `/tmp/go2rtc_solo.log`
 - Service logs: `/var/log/lan_bridge.log`, `/var/log/${PROJECT_NAME}_watchdog.log`, `/var/log/nginx/access.log`
 
@@ -66,7 +66,7 @@ If you try this on another printer, treat it as experimental:
 
 - Verify `/info`, `/protocal.csp`, and `/server/info` responses match what the stock Creality Print app expects for your model.
 - Check that Moonraker is reachable on the expected host/port.
-- Adapt `LIGHT_ON_GCODE`/`LIGHT_OFF_GCODE` (or `LIGHT_MOONRAKER_URL`) if the LED/chamber light is controlled differently on your board. The default commands are `SET_PIN PIN=LED VALUE=1` and `SET_PIN PIN=LED VALUE=0`.
+- Adapt `LIGHT_ON_GCODE`/`LIGHT_OFF_GCODE`, `LIGHT_MOONRAKER_URL`, or `LIGHT_QUERY_OBJECT` if the LED/chamber light is controlled differently on your board. The defaults query `output_pin LED` and send `SET_PIN PIN=LED VALUE=1` / `VALUE=0`.
 
 Use at your own risk. This is an unofficial compatibility layer, not a Creality-supported solution.
 
@@ -194,7 +194,7 @@ python3 scripts/local_http_proxy.py \
 | Command | Purpose |
 |---------|---------|
 | `./install.sh install [HOST] [USER]` | Backup stock config, deploy files, enable services, restart stack |
-| `./install.sh sync [HOST] [USER]` | Push only changed files and restart services |
+| `./install.sh sync [HOST] [USER]` | Push only changed files and restart all services |
 | `./install.sh status [HOST] [USER]` | Show file sync status and service states |
 | `./install.sh restore [HOST] [USER]` | Restore stock nginx/services, disable our stack |
 | `./install.sh uninstall [HOST] [USER]` | Restore stock config and remove our files |
@@ -239,6 +239,50 @@ Because the camera stack is exposed through nginx, you can point other tools at 
 | WebRTC answer | `https://${PUBLIC_HOST}/call/webrtc_local` |
 
 For HTTPS versions, replace `http://${PRINTER_HOST}` with `https://${PUBLIC_HOST}` and note that self-signed certs will need to be trusted or verification disabled in the consuming tool.
+
+### Homebridge camera example
+
+For `homebridge-camera-ui` (or similar plugins), point the video config at the MJPEG feed and snapshot at the JPEG endpoint:
+
+```json
+{
+  "name": "Printer Camera",
+  "videoConfig": {
+    "source": "-i http://${PRINTER_HOST}/camera.mjpeg",
+    "stillImageSource": "-i http://${PRINTER_HOST}/camera.jpeg",
+    "maxWidth": 1280,
+    "maxHeight": 720,
+    "maxFPS": 15
+  }
+}
+```
+
+## Chamber / camera LED control
+
+The status page can toggle the chamber/camera LED, and the same control is exposed as simple REST endpoints so you can wire it into Homebridge, Home Assistant, or any other tool that can call a URL:
+
+| Endpoint | Method | Returns |
+|----------|--------|---------|
+| `https://${PUBLIC_HOST}/${STATUS_PATH}/api/light` | GET | JSON `{"state":"on\|off\|unknown","since":"..."}` |
+| `https://${PUBLIC_HOST}/${STATUS_PATH}/api/light/simple` | GET | Plain text: `on`, `off`, or `unknown` |
+| `https://${PUBLIC_HOST}/${STATUS_PATH}/api/light/set?state=on` | GET | JSON result of the toggle |
+| `https://${PUBLIC_HOST}/${STATUS_PATH}/api/light` | POST (JSON or form) | JSON result of the toggle |
+
+Homebridge `homebridge-http-switch` example:
+
+```json
+{
+  "accessory": "HTTP-SWITCH",
+  "name": "Printer LED",
+  "switchType": "switch",
+  "onUrl": "https://printer.lan/bridge-status/api/light/set?state=on",
+  "offUrl": "https://printer.lan/bridge-status/api/light/set?state=off",
+  "statusUrl": "https://printer.lan/bridge-status/api/light/simple",
+  "statusPattern": "on"
+}
+```
+
+In `open` LAN mode you can use `http://${PRINTER_HOST}/${STATUS_PATH}/...` instead. If you are using a self-signed certificate, disable TLS verification in the consuming tool or install the certificate as trusted.
 
 ## Helpful reference files
 
