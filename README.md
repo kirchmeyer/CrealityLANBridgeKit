@@ -1,6 +1,6 @@
 # CrealityLANBridgeKit
 
-A printer-side compatibility layer for the stock Creality Print macOS app. The goal is to keep the app stock, make the printer expose the contract the app already expects, and do it all over HTTPS without breaking either LAN-added or cloud-connected printers.
+A printer-side LAN bridge that lets the stock Creality Print app control your Creality printer locally — and adds HTTPS Fluidd/Moonraker, webcam, LED, and Homebridge support without breaking cloud.
 
 ```bash
 git clone https://github.com/kirchmeyer/CrealityLANBridgeKit.git
@@ -15,7 +15,7 @@ cd CrealityLANBridgeKit
 - Terminates TLS on the printer so the public-facing flow can use HTTPS while the stock app continues to work over plain HTTP on the local network.
 - Emits ECS-compliant JSON logs from all services for easy aggregation.
 
-Think of it as a compatibility spoke: the printer still talks to Creality Cloud the way it always did, but it also answers the LAN contract the desktop app expects, so you can use the stock app, Home Assistant, Homebridge, or any other LAN consumer at the same time.
+Think of it as a compatibility spoke: the printer still talks to Creality Cloud the way it always did, but it also answers the LAN contract the desktop app expects, so you can use the stock app, Fluidd, Home Assistant, Homebridge, or any other LAN consumer at the same time.
 
 ## Repository layout
 

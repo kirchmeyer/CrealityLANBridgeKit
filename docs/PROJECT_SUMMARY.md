@@ -1,6 +1,6 @@
 # Project Summary
 
-This repository is a printer-side compatibility layer for the stock Creality Print macOS app. The core idea is simple:
+This repository is a printer-side LAN bridge that lets the stock Creality Print app control a Creality printer locally while keeping Creality Cloud and HTTPS Fluidd/Moonraker intact. The core idea is simple:
 
 - Keep the app stock.
 - Make the printer expose the routes and payloads that the app already expects.

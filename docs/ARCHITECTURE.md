@@ -84,10 +84,11 @@ go2rtc grabs H264 frame from ffmpeg/v4l2 and serves a JPEG
 
 | Component | Responsibility |
 |-----------|----------------|
-| `nginx` | Terminates app-facing HTTP/WebSocket; routes to backend or camera; handles TLS on 443 if configured. |
+| `nginx` | Terminates app-facing HTTP/WebSocket; routes to backend, camera, or status page; handles TLS on 443 if configured. |
 | `lan_bridge.py` | Translates Creality LAN protocol to Moonraker/Klipper; pushes status over WebSocket; serves `/info`, `/protocal.csp`, `/upload`. |
 | `go2rtc` | Reads `/dev/video0` H264 and exposes frame/stream endpoints on `:1984`. |
 | `webrtc_local_bridge.py` | Optional adapter that turns go2rtc WebRTC answers into the base64 JSON the app expects for `POST /call/webrtc_local`. |
+| `status_page.py` | Operational status dashboard, LED control, and TLS certificate info at `/${STATUS_PATH}/`. |
 | `Moonraker` | Klipper API gateway and file manager. |
 | `Klipper` | Real-time printer control. |
 
