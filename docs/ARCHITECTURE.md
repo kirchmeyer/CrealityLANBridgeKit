@@ -14,6 +14,7 @@ flowchart TB
     subgraph Printer["OpenWrt printer"]
         Nginx[nginx\n:80 :81 :443 :9999]
         Bridge[lan_bridge.py\n127.0.0.1:9002]
+        Status[status_page.py\n127.0.0.1:8765]
         Go2rtc[go2rtc\n127.0.0.1:1984]
         WebRTC[webrtc_local_bridge.py\n127.0.0.1:8000]
         Cam[cam_app / ffmpeg\n/dev/video0 H264]
@@ -25,9 +26,11 @@ flowchart TB
     App -->|HTTP /info, /protocal.csp, /upload| Proxy
     App -->|WebSocket :9999| Nginx
     App -.->|camera.jpeg / camera.mjpeg| Nginx
+    Browser[Browser / Homebridge] -->|/${STATUS_PATH}/*| Nginx
     Proxy -->|HTTPS| Nginx
     Nginx -->|/info /protocal.csp /upload| Bridge
     Nginx -->|WebSocket :9999| Bridge
+    Nginx -->|/${STATUS_PATH}/*| Status
     Nginx -->|/camera.*| Go2rtc
     Nginx -->|/call/webrtc_local| WebRTC
     Bridge -->|printer state + gcode| Moonraker
@@ -40,9 +43,9 @@ flowchart TB
     classDef app fill:#fff3e0,stroke:#e65100
     classDef service fill:#e8f5e9,stroke:#1b5e20
     classDef data fill:#f3e5f5,stroke:#4a148c
-    class App app
+    class App,Browser app
     class Proxy external
-    class Nginx,Bridge,Go2rtc,WebRTC service
+    class Nginx,Bridge,Status,Go2rtc,WebRTC service
     class Cam service
     class Moonraker,Klipper service
     class Data data
