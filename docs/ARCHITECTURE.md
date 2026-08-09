@@ -26,11 +26,11 @@ flowchart TB
     App -->|HTTP /info, /protocal.csp, /upload| Proxy
     App -->|WebSocket :9999| Nginx
     App -.->|camera.jpeg / camera.mjpeg| Nginx
-    Browser[Browser / Homebridge] -->|/${STATUS_PATH}/*| Nginx
+    Browser[Browser / Homebridge] -->|"/${STATUS_PATH}/*"| Nginx
     Proxy -->|HTTPS| Nginx
     Nginx -->|/info /protocal.csp /upload| Bridge
     Nginx -->|WebSocket :9999| Bridge
-    Nginx -->|/${STATUS_PATH}/*| Status
+    Nginx -->|"/${STATUS_PATH}/*"| Status
     Nginx -->|/camera.*| Go2rtc
     Nginx -->|/call/webrtc_local| WebRTC
     Bridge -->|printer state + gcode| Moonraker
