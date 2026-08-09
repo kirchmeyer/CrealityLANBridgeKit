@@ -257,6 +257,28 @@ For `homebridge-camera-ui` (or similar plugins), point the video config at the M
 }
 ```
 
+### matterbridge-rtsp-camera example
+
+Add the go2rtc RTSP feed directly in `matterbridge-rtsp-camera.config.json`. Use `homekit` mode for Apple Home; use `matter` mode if your controller supports Matter 1.5 cameras:
+
+```json
+{
+  "name": "matterbridge-rtsp-camera",
+  "type": "DynamicPlatform",
+  "debug": false,
+  "unregisterOnShutdown": false,
+  "mode": "homekit",
+  "homekitPin": "031-45-154",
+  "cameras": [
+    {
+      "id": "printer-cam",
+      "name": "Printer Camera",
+      "rtspUrl": "rtsp://${PRINTER_HOST}:8554/camera"
+    }
+  ]
+}
+```
+
 ## Chamber / camera LED control
 
 The status page can toggle the chamber/camera LED, and the same control is exposed as simple REST endpoints so you can wire it into Homebridge, Home Assistant, or any other tool that can call a URL:
