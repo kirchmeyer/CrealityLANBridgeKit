@@ -160,7 +160,7 @@ Browsers and the Creality Print app will not trust it by default. Options:
 
 - Trust the generated `.crt` in your Mac System keychain so Safari and the app's WebKit view accept it.
 - Add the printer by IP in Creality Print (`http://192.168.1.100`) to stay on plain HTTP on the LAN.
-- For Home Assistant, Homebridge, or other integrations, disable TLS verification for local feeds or install the `.crt` as trusted on the consuming host.
+- For Home Assistant, Homebridge, [matterbridge-rtsp-camera](https://github.com/kirchmeyer/matterbridge-rtsp-camera), or other integrations, disable TLS verification for local feeds or install the `.crt` as trusted on the consuming host.
 - For the simplest long-term setup, use a real certificate from a public CA (for example, Let's Encrypt with DNS validation).
 
 #### Fallback: local HTTP proxy on your PC/Mac
@@ -292,7 +292,7 @@ ssh root@192.168.1.100 'vi /etc/init.d/lan_bridge && /etc/init.d/lan_bridge rest
 
 ## 8. Camera URLs for other integrations
 
-Because the camera stack is exposed through nginx, you can use the same feeds in Home Assistant, Homebridge, or any other MJPEG/RTSP consumer:
+Because the camera stack is exposed through nginx, you can use the same feeds in Home Assistant, Homebridge, [matterbridge-rtsp-camera](https://github.com/kirchmeyer/matterbridge-rtsp-camera), or any other MJPEG/RTSP consumer:
 
 | Feed | URL |
 |------|-----|
