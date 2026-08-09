@@ -273,7 +273,7 @@ Add the go2rtc RTSP feed directly in `matterbridge-rtsp-camera.config.json`. Use
     {
       "id": "printer-cam",
       "name": "Printer Camera",
-      "rtspUrl": "rtsp://${PRINTER_HOST}:8554/camera"
+      "rtspUrl": "rtsp://${PRINTER_HOST}:8554/camera?video=all&audio=all"
     }
   ]
 }
