@@ -73,10 +73,30 @@ restart_service() {
     /etc/init.d/"$svc" restart >/dev/null 2>&1 || log error "restart failed: $svc"
 }
 
+recover_nginx_config() {
+    recovery_config="/etc/${PROJECT_NAME}/recovery/nginx.conf"
+    [ -s "$recovery_config" ] || return 1
+
+    if grep -q "# LAN bridge front-door config" /etc/nginx/nginx.conf 2>/dev/null \
+        && nginx -t >/dev/null 2>&1; then
+        return 0
+    fi
+
+    cp -f "$recovery_config" /etc/nginx/nginx.conf
+    if nginx -t >/dev/null 2>&1; then
+        log warning "RESTORE nginx: recovered validated front-door config"
+        return 0
+    fi
+
+    log error "restore failed: recovered nginx config is invalid"
+    return 1
+}
+
 # -----------------------------------------------------------------------------
 # Main loop
 # -----------------------------------------------------------------------------
 log info "watchdog started (interval=${INTERVAL}s)"
+sleep "$INTERVAL"
 
 while true; do
     # --- Camera stack ---------------------------------------------------------
@@ -129,8 +149,19 @@ while true; do
     fi
 
     # --- nginx front door -----------------------------------------------------
+    # Firmware upgrades can restart Monitor, which in turn respawns the stock
+    # web-server on nginx's ports.
+    if is_running "/usr/bin/Monitor" || is_running "/usr/bin/web-server"; then
+        log warning "STOP stock front door: Monitor or web-server is running"
+        /etc/init.d/app disable >/dev/null 2>&1 || true
+        killall -9 Monitor >/dev/null 2>&1 || true
+        killall -9 web-server >/dev/null 2>&1 || true
+    fi
+
     if ! is_running "nginx: master process"; then
-        restart_service nginx "nginx master not running"
+        if recover_nginx_config; then
+            restart_service nginx "nginx master not running"
+        fi
     elif ! is_listening 80; then
         restart_service nginx "nginx port 80 not listening"
     fi

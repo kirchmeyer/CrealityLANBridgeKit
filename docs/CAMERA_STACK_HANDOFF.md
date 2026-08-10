@@ -19,7 +19,7 @@ Fix: patched `/etc/init.d/webrtc` to ensure `/tmp/uvc_fifo` exists **before** la
                     └── /usr/local/bin/cam_delivery_bridge.py
                             ├── /tmp/uvc_fifo  ──> /usr/bin/webrtc  ──> Creality Cloud
                             └── /tmp/go2rtc_cam.fifo ──> /usr/bin/go2rtc
-                                    ├── RTSP/WebRTC ──> Fluidd / Homebridge / [matterbridge-rtsp-camera](https://github.com/kirchmeyer/matterbridge-rtsp-camera)
+                                    ├── RTSP/WebRTC ──> Fluidd / Homebridge / matterbridge-rtsp-camera
                                     └── RTSP ──> /usr/local/bin/mjpeg_server.py
                                             └── MJPEG endpoints /camera.mjpeg, /webcam/stream.mjpg
 ```

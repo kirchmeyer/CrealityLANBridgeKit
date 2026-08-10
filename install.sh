@@ -52,7 +52,7 @@ apply_derived_paths() {
 apply_derived_paths
 
 # Canonical services we manage.
-OUR_SERVICES=(lan_bridge go2rtc status_page creality_mdns webrtc_local_bridge watchdog)
+OUR_SERVICES=(app_cloud_only lan_bridge go2rtc status_page creality_mdns webrtc_local_bridge watchdog)
 STOCK_SERVICES_TO_DISABLE=(app mjpeg_server)
 
 SSH_KEY="${SSH_KEY:-}"
@@ -247,6 +247,14 @@ fragment = pathlib.Path("${http_fragment}")
 nginx.write_text(nginx.read_text().replace("# LAN_MODE_HTTP_SERVER_PLACEHOLDER", fragment.read_text()))
 PY
     rm -f "$http_fragment"
+
+    if grep -Eq '%[A-Z_][A-Z_]*%' \
+        "$nginx_staged" \
+        "${STAGE_DIR}/printer/lan_bridge.init.sh" \
+        "${STAGE_DIR}/printer/status_page.init.sh" \
+        "${STAGE_DIR}/printer/watchdog.init.sh"; then
+        fail "unresolved configuration placeholder in staged files"
+    fi
 }
 
 sync_files() {
@@ -267,6 +275,8 @@ set_permissions() {
                   /usr/local/bin/watchdog.sh \
                   /usr/local/bin/restart_cam_stack.sh
         chmod +x /etc/init.d/lan_bridge \
+                  /etc/init.d/app_cloud_only \
+                  /etc/init.d/webrtc \
                   /etc/init.d/go2rtc \
                   /etc/init.d/mjpeg_server \
                   /etc/init.d/status_page \
@@ -331,6 +341,7 @@ install_services() {
 
         # Enable our services.
         /etc/init.d/lan_bridge enable
+        /etc/init.d/app_cloud_only enable
         /etc/init.d/go2rtc enable
         /etc/init.d/status_page enable
         /etc/init.d/creality_mdns enable
@@ -343,15 +354,40 @@ restart_our_stack() {
     log "restarting services on ${TARGET}"
     ssh_cmd '
         set -e
-        /etc/init.d/nginx restart
         nginx -t
+        mkdir -p /etc/'"$PROJECT_NAME"'/recovery
+        cp -f /etc/nginx/nginx.conf /etc/'"$PROJECT_NAME"'/recovery/nginx.conf
+
+        # Firmware upgrades may re-enable the stock front door. Monitor
+        # respawns web-server, so both must be stopped before nginx starts.
+        /etc/init.d/app stop 2>/dev/null || true
+        /etc/init.d/app disable 2>/dev/null || true
+        if [ -x /etc/init.d/app_cloud_only ]; then
+            /etc/init.d/app_cloud_only restart 2>/dev/null || true
+            sleep 1
+        fi
+        killall -9 Monitor 2>/dev/null || true
+        killall -9 web-server 2>/dev/null || true
+        /etc/init.d/nginx restart
         /etc/init.d/lan_bridge restart
         /etc/init.d/go2rtc restart
         /etc/init.d/status_page restart
         /etc/init.d/creality_mdns restart
         /etc/init.d/webrtc_local_bridge restart
         /etc/init.d/watchdog restart
-        sleep 2
+
+        attempt=0
+        while [ "$attempt" -lt 45 ]; do
+            listeners=$(netstat -lnt 2>/dev/null)
+            if echo "$listeners" | grep -q ":8000 " \
+                && echo "$listeners" | grep -q ":1984 "; then
+                exit 0
+            fi
+            attempt=$((attempt + 1))
+            sleep 1
+        done
+        echo "WebRTC services did not become ready on ports 8000 and 1984" >&2
+        exit 1
     '
 }
 
@@ -389,6 +425,7 @@ remove_our_files() {
             rm -f "$f"
         done
         for f in /etc/init.d/lan_bridge \
+                 /etc/init.d/app_cloud_only \
                  /etc/init.d/go2rtc \
                  /etc/init.d/mjpeg_server \
                  /etc/init.d/status_page \

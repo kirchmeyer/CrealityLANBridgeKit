@@ -3,7 +3,9 @@
 import argparse
 import base64
 import json
+import os
 import ssl
+import time
 import urllib.request
 
 # Minimal SDP offer that go2rtc will accept for src=camera.
@@ -55,6 +57,16 @@ def check(url: str, host_header: str = None, insecure: bool = False) -> bool:
         return False
 
 
+def retry_check(url: str, host_header: str = None, insecure: bool = False) -> bool:
+    for attempt in range(1, 6):
+        if check(url, host_header=host_header, insecure=insecure):
+            return True
+        if attempt < 5:
+            print(f"RETRY {url}: camera stack is still warming up ({attempt}/5)")
+            time.sleep(3)
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="Test webrtc_local frontdoor")
     parser.add_argument("--host", default=os.environ.get("PRINTER_HOST", "192.168.1.100"))
@@ -63,8 +75,8 @@ def main():
     args = parser.parse_args()
 
     ok = True
-    ok &= check(f"http://{args.host}/call/webrtc_local")
-    ok &= check(f"https://{args.domain}/call/webrtc_local", host_header=args.domain, insecure=args.insecure)
+    ok &= retry_check(f"http://{args.host}/call/webrtc_local")
+    ok &= retry_check(f"https://{args.domain}/call/webrtc_local", host_header=args.domain, insecure=args.insecure)
 
     if ok:
         print("\nAll frontdoor checks passed.")

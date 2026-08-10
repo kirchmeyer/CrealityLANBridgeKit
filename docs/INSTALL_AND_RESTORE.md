@@ -22,6 +22,7 @@ The app sees:
 The printer runs:
 - `lan_bridge.py` — the compatibility backend
 - `nginx` — front-door routing and camera proxying
+- `app_cloud_only` — stock cloud services without `Monitor` or `web-server`
 - `go2rtc` + `cam_app` + `mjpeg_server.py` — single-source camera stack
 - `webrtc_local_bridge.py` — WebRTC answer adapter for the LAN app camera
 - `${PROJECT_NAME}_status_page.py` — operational status dashboard
@@ -211,6 +212,26 @@ curl -s http://192.168.1.100/camera.jpeg | head -c 50
 
 ## 5. If something breaks — restore points
 
+### After a firmware upgrade
+
+The watchdog keeps a validated copy of the rendered front-door config at
+`/etc/${PROJECT_NAME}/recovery/nginx.conf`. If an upgrade restores the stock
+nginx config or restarts `Monitor`/`web-server`, the watchdog restores that
+copy, stops the conflicting stock front door, and restarts nginx.
+
+If the firmware removed bridge files or certificates, reapply from the repo
+with the same certificate basename used by the existing installation:
+
+```bash
+export PRINTER_HOST=192.168.1.100
+export CERT_BASENAME=self-signed  # or the basename of the existing .crt/.key
+./install.sh sync
+./scripts/run_contract_check.sh
+```
+
+The installer validates nginx before replacing the recovery copy. A malformed
+or partially rendered config therefore cannot become the known-good copy.
+
 ### Soft recovery (services only)
 
 ```bash
@@ -285,7 +306,7 @@ ssh root@192.168.1.100 'vi /etc/init.d/lan_bridge && /etc/init.d/lan_bridge rest
 ## 7. Known limitations
 
 - **mDNS scan discovery** from Creality Print is not yet fully emulated; add the printer by IP.
-- **Creality Cloud mobile camera** uses Creality's cloud tunnel and is out of scope for this LAN-only bridge.
+- **Creality Cloud services** still depend on Creality's external MQTT/WebRTC infrastructure and working printer DNS.
 - **LED pin scale hazard**: sending `SET_PIN PIN=LED VALUE=255` directly to Klipper crashes it because the `[output_pin LED]` scale is `1.0`. The bridge clamps to `0.0-1.0`, but avoid direct G-code values > 1.
 
 ---
@@ -310,17 +331,21 @@ For HTTPS versions, replace `http://${PRINTER_HOST}` with `https://${PUBLIC_HOST
 | File | What it is |
 |------|------------|
 | `install.sh` | Unified installer/restore/uninstall entry point |
+| `printer/app_cloud_only.init.sh` | Cloud-capable stock service subset without `Monitor` or `web-server` |
 | `printer/lan_bridge.py` | The main compatibility backend |
 | `printer/lan_bridge.init.sh` | OpenWrt init script |
+| `printer/nginx.frontdoor.conf` | Rendered nginx front-door template |
+| `printer/nginx.http.open.conf` | Plain HTTP LAN server fragment |
 | `printer/creality.lan.locations.conf` | nginx HTTP locations |
 | `printer/creality.lan.websocket.conf` | nginx WebSocket/camera server |
+| `printer/webrtc.init.sh` | FIFO-safe stock cloud WebRTC init script |
 | `printer/webrtc_local_bridge.py` | WebRTC answer adapter for the app |
-| `printer/${PROJECT_NAME}_status_page.py` | Operational status dashboard |
-| `printer/${PROJECT_NAME}_watchdog.sh` | Stack-wide health monitor |
+| `printer/status_page.py` | Operational status dashboard |
+| `printer/watchdog.sh` | Stack-wide health monitor |
 | `scripts/check_local_remote_sync.py` | Idempotent file sync to the printer |
 | `scripts/run_contract_check.sh` | Endpoint contract validator |
+| `scripts/test_webrtc_frontdoor.py` | HTTP/HTTPS WebRTC contract validator |
 | `scripts/reset_creality_print_cache.sh` | macOS app cache reset |
-| `docs/SESSION_HANDOFF.md` | Developer/recovery notes |
 | `docs/LAN_PROTOCOL_CONTRACT.md` | API contract reference |
 | `docs/ARCHITECTURE.md` | System diagram and data flow |
 

@@ -23,6 +23,7 @@ from typing import Optional
 # Canonical mapping: local repo path -> remote printer path.
 # Keep this in sync with the deploy scripts.
 FILE_MAP = {
+    "printer/app_cloud_only.init.sh": "/etc/init.d/app_cloud_only",
     "printer/lan_bridge.py": "/usr/local/bin/lan_bridge.py",
     "printer/lan_bridge.init.sh": "/etc/init.d/lan_bridge",
     "printer/mjpeg_server.py": "/usr/local/bin/mjpeg_server.py",
@@ -39,6 +40,7 @@ FILE_MAP = {
     "printer/webrtc_local_bridge.py": "/usr/local/bin/webrtc_local_bridge.py",
     "printer/webrtc_local_bridge.init.sh": "/etc/init.d/webrtc_local_bridge",
     "printer/webrtc_local_wrapper.sh": "/usr/bin/webrtc_local",
+    "printer/webrtc.init.sh": "/etc/init.d/webrtc",
     "printer/watchdog.sh": "/usr/local/bin/watchdog.sh",
     "printer/watchdog.init.sh": "/etc/init.d/watchdog",
     "printer/nginx.frontdoor.conf": "/etc/nginx/nginx.conf",
