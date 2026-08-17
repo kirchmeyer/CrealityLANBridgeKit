@@ -219,6 +219,21 @@ The watchdog keeps a validated copy of the rendered front-door config at
 nginx config or restarts `Monitor`/`web-server`, the watchdog restores that
 copy, stops the conflicting stock front door, and restarts nginx.
 
+Before starting the stock cloud services, `app_cloud_only` also reconciles
+`system_version.json` with the bootloader's current `version`. This prevents
+Creality Cloud from continuing to report the previous firmware after an OTA
+partition switch. Each retained stock daemon is supervised by procd with bounded
+respawn because the disabled stock `Monitor` previously restarted
+`master-server`, `app-server`, and `display-server`; without that replacement, a
+transient `display-server` startup failure can download a Cloud print without
+handing it off to Klipper.
+
+The installer also corrects a packaged Moonraker path bug found in firmware
+`V1.1.6.4`. Without it, Fluidd's **Docs** and **Config Examples** tabs fail with
+`forbidden by reserved path 'moonraker'` because Moonraker reserves all of
+`/usr/share` instead of only `/usr/share/moonraker`. The repair preserves the
+read-only Klipper roots and is applied only when that exact layout is detected.
+
 If the firmware removed bridge files or certificates, reapply from the repo
 with the same certificate basename used by the existing installation:
 

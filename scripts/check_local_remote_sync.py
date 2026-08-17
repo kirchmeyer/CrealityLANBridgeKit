@@ -24,6 +24,7 @@ from typing import Optional
 # Keep this in sync with the deploy scripts.
 FILE_MAP = {
     "printer/app_cloud_only.init.sh": "/etc/init.d/app_cloud_only",
+    "printer/fix_moonraker_reserved_path.sh": "/usr/local/bin/fix_moonraker_reserved_path.sh",
     "printer/lan_bridge.py": "/usr/local/bin/lan_bridge.py",
     "printer/lan_bridge.init.sh": "/etc/init.d/lan_bridge",
     "printer/mjpeg_server.py": "/usr/local/bin/mjpeg_server.py",

@@ -30,6 +30,7 @@ import struct
 import sys
 import threading
 import traceback
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1316,9 +1317,9 @@ class LanBridgeHandler(BaseHTTPRequestHandler):
 
     def _handle_upload(self, path):
         try:
-            file_name = path.split("/", 2)[-1]
-            if not file_name:
-                self.send_error(400, "missing filename")
+            file_name = urllib.parse.unquote(path.split("/", 2)[-1])
+            if not file_name or file_name in (".", "..") or "/" in file_name or "\\" in file_name or "\x00" in file_name:
+                self.send_error(400, "invalid filename")
                 return
             length = int(self.headers.get("Content-Length", "0"))
             payload = self.rfile.read(length) if length > 0 else b""

@@ -267,6 +267,7 @@ set_permissions() {
     ssh_cmd '
         set -e
         chmod +x /usr/local/bin/lan_bridge.py \
+                  /usr/local/bin/fix_moonraker_reserved_path.sh \
                   /usr/local/bin/mjpeg_server.py \
                   /usr/local/bin/cam_delivery_bridge.py \
                   /usr/local/bin/status_page.py \
@@ -354,6 +355,22 @@ restart_our_stack() {
     log "restarting services on ${TARGET}"
     ssh_cmd '
         set -e
+
+        moonraker_patch=$(/usr/local/bin/fix_moonraker_reserved_path.sh)
+        if [ "$moonraker_patch" = patched ]; then
+            /etc/init.d/moonraker restart
+            attempt=0
+            while [ "$attempt" -lt 60 ]; do
+                netstat -lnt 2>/dev/null | grep -q ":7125 " && break
+                attempt=$((attempt + 1))
+                sleep 1
+            done
+            [ "$attempt" -lt 60 ] || {
+                echo "Moonraker did not become ready on port 7125" >&2
+                exit 1
+            }
+        fi
+
         nginx -t
         mkdir -p /etc/'"$PROJECT_NAME"'/recovery
         cp -f /etc/nginx/nginx.conf /etc/'"$PROJECT_NAME"'/recovery/nginx.conf
@@ -642,18 +659,14 @@ parse_options() {
     done
 }
 
-parse_install_args() {
-    shift 3  # drop command, host, user
-    parse_options "$@"
-}
-
-parse_sync_args() {
-    shift 3  # drop command, host, user
-    parse_options "$@"
-}
-
-parse_status_args() {
-    shift 3  # drop command, host, user
+parse_command_options() {
+    shift  # drop command
+    if [[ $# -gt 0 && "$1" != --* ]]; then
+        shift  # drop host
+    fi
+    if [[ $# -gt 0 && "$1" != --* ]]; then
+        shift  # drop user
+    fi
     parse_options "$@"
 }
 
@@ -671,7 +684,7 @@ parse_cert_args() {
 COMMAND="${1:-}"
 case "$COMMAND" in
     install)
-        parse_install_args "$@"
+        parse_command_options "$@"
         cmd_install
         ;;
     restore)
@@ -681,11 +694,11 @@ case "$COMMAND" in
         cmd_uninstall
         ;;
     sync)
-        parse_sync_args "$@"
+        parse_command_options "$@"
         cmd_sync
         ;;
     status)
-        parse_status_args "$@"
+        parse_command_options "$@"
         cmd_status
         ;;
     cert)

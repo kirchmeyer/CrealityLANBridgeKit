@@ -151,6 +151,17 @@ def check_upload_routes(base: str, timeout: float) -> None:
         fail("/upload/contract_check.gcode missing expected success markers")
     print("OK: /upload/contract_check.gcode")
 
+    spaced_name = "contract check spaced.gcode"
+    encoded_name = urllib.parse.quote(spaced_name)
+    status, payload = fetch_json(base + "/upload/" + encoded_name, method="POST", data=test_body, timeout=max(timeout, 20.0))
+    if status not in (200, 201):
+        fail(f"/upload/{encoded_name} status {status}, expected 200/201")
+    status, directory = fetch_json(base + "/server/files/list", timeout=max(timeout, 20.0))
+    files = directory.get("result", []) if isinstance(directory, dict) else []
+    if not any(item.get("path") == spaced_name for item in files if isinstance(item, dict)):
+        fail(f"/upload/{encoded_name} did not store decoded filename {spaced_name!r}")
+    print(f"OK: /upload/{encoded_name} decoded filename")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate printer compatibility endpoint contracts.")
