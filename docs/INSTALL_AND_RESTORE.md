@@ -25,8 +25,8 @@ The printer runs:
 - `app_cloud_only` — stock cloud services without `Monitor` or `web-server`
 - `go2rtc` + `cam_app` + `mjpeg_server.py` — single-source camera stack
 - `webrtc_local_bridge.py` — WebRTC answer adapter for the LAN app camera
-- `${PROJECT_NAME}_status_page.py` — operational status dashboard
-- `${PROJECT_NAME}_watchdog.sh` — custom stack-wide health monitor
+- `status_page.py` — operational status dashboard
+- `watchdog.sh` — custom stack-wide health monitor
 - ECS-compliant JSON logging from all services
 
 ---
@@ -106,7 +106,7 @@ See [README.md](../README.md) for more on the local HTTP proxy.
 3. Sets executable permissions on scripts and init files.
 4. Disables the stock Creality `app` service (so it does not reclaim ports 80/443).
 5. Enables and restarts our services:
-   - `lan_bridge`, `go2rtc`, `status_page`, `creality_mdns`, `webrtc_local_bridge`, `watchdog`
+  - `app_cloud_only`, `lan_bridge`, `go2rtc`, `status_page`, `creality_mdns`, `webrtc_local_bridge`, `watchdog`
 6. Reloads nginx and runs the endpoint contract check.
 
 ### Re-install after local changes

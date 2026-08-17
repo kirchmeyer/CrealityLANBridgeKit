@@ -15,6 +15,24 @@ cd CrealityLANBridgeKit
 - Terminates TLS on the printer so the public-facing flow can use HTTPS while the stock app continues to work over plain HTTP on the local network.
 - Emits ECS-compliant JSON logs from all services for easy aggregation.
 
+## Resilience and recovery
+
+The bridge is designed to survive the failures most likely to occur on a
+printer rather than requiring a manual reinstall after every disruption:
+
+- A stack watchdog checks the camera, LAN bridge, WebRTC, status page, and nginx
+  processes and listeners, restarting failed services through OpenWrt procd.
+- The installer keeps a stock configuration manifest and a validated rendered
+  nginx recovery copy, with explicit `restore` and `uninstall` commands.
+- Firmware-upgrade recovery stops the stock front door if it reappears,
+  reconciles the reported firmware version, and repairs the known Moonraker
+  reserved-path issue when the affected layout is detected.
+- Retained cloud services use bounded respawn, while the stock desktop app is
+  left untouched so client updates do not overwrite the printer-side fix.
+
+See [docs/INSTALL_AND_RESTORE.md](docs/INSTALL_AND_RESTORE.md) for recovery
+commands and the full restore procedure.
+
 Think of it as a compatibility spoke: the printer still talks to Creality Cloud the way it always did, but it also answers the LAN contract the desktop app expects, so you can use the stock app, Fluidd, Home Assistant, Homebridge, or any other LAN consumer at the same time.
 
 ## Repository layout
@@ -26,7 +44,7 @@ Think of it as a compatibility spoke: the printer still talks to Creality Cloud 
 - `printer/creality.lan.locations.conf` — nginx location blocks for the LAN-facing routes
 - `printer/creality.lan.websocket.conf` — nginx WebSocket server on port 9999
 - `printer/status_page.py` — operational status dashboard at `/${STATUS_PATH}/`
-- `printer/watchdog.sh` — custom stack-wide health monitor
+- `printer/watchdog.sh` — custom stack-wide health monitor and service recovery
 - `scripts/endpoint_contract_check.py` — fast contract validation against the printer front door
 - `scripts/check_local_remote_sync.py` — compare/deploy repo files to the printer
 - `scripts/run_contract_check.sh` — wrapper for the full check
